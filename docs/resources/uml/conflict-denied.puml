@@ -1,0 +1,48 @@
+@startuml conflict-denied
+title Конфликт: Устаревший запрос (DENIED)
+
+actor "Клиент A" as ClientA
+participant "Сервер" as Server
+actor "Клиент B" as ClientB
+
+== Оба клиента изменяют файл ==
+ClientA -> ClientA: Изменение file.txt\nFIRST_TRY_TIME = 100
+ClientB -> ClientB: Изменение file.txt\nFIRST_TRY_TIME = 105
+
+== Клиент B загружает первым ==
+ClientB -> Server: ASK_VERSION_INCREASE\n(file.txt, time=105)
+Server -> Server: LAST_TRY = (105, connection_B)
+Server -> Server: Установить блокировку
+Server -> ClientB: VERSION_INCREASE_ALLOW
+ClientB -> Server: FILE_WRITE (chunk 1)
+
+== Клиент A пытается загрузить ==
+ClientA -> Server: ASK_VERSION_INCREASE\n(file.txt, time=100)
+Server -> Server: Проверить LAST_TRY
+note right
+  LAST_TRY.time = 105 > 100
+  Запрос УСТАРЕЛ
+end note
+Server -> ClientA: VERSION_INCREASE_DENY\n(file.txt: DENIED)
+
+== Клиент A получает новую версию ==
+ClientA -> ClientA: Инициировать процесс\nобновления данных
+ClientA -> Server: REQUEST_VERSION\n(directory_id)
+
+== Клиент B завершает загрузку ==
+ClientB -> Server: FILE_WRITE (chunk 2)
+ClientB -> Server: FILE_WRITE_END
+Server -> Server: Версия: v1 → v2
+Server -> Server: Снять блокировку
+Server -> ClientA: CHECK_VERSION\n(file.txt, version=2)
+
+== Клиент A скачивает новую версию ==
+ClientA -> ClientA: Локальная v1 < Серверная v2
+ClientA -> ClientA: Сохранить локальные изменения\nв безопасное место
+ClientA -> Server: REQUEST_FILE_CONTENT\n(file.txt)
+Server -> ClientA: FILE_CONTENT_REQUEST_ALLOW
+Server -> ClientA: FILE_WRITE...
+Server -> ClientA: FILE_WRITE_END
+ClientA -> ClientA: Локальные изменения потеряны\n(сохранены в backup)
+
+@enduml

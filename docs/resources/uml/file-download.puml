@@ -1,0 +1,37 @@
+@startuml file-download
+title Получение обновленных файлов
+
+actor "Клиент" as Client
+participant "Сервер" as Server
+
+== Инициация обновления ==
+Client -> Server: REQUEST_VERSION\n(directory_ids)
+Server -> Client: CHECK_VERSION\n(file.txt v2, file2.txt v3)
+
+== Сравнение версий ==
+Client -> Client: Локальная версия file.txt: v1
+Client -> Client: Серверная версия file.txt: v2
+Client -> Client: Требуется обновление
+Client -> Client: Сохранить текущую версию\nв безопасное место
+
+== Запрос содержимого ==
+Client -> Server: REQUEST_FILE_CONTENT\n(file.txt)
+Server -> Server: Проверить блокировки
+note right
+  Файл свободен
+end note
+Server -> Server: Установить блокировку чтения
+Server -> Client: FILE_CONTENT_REQUEST_ALLOW
+
+== Получение данных ==
+Server -> Client: FILE_WRITE (chunk 1)
+Server -> Client: FILE_WRITE (chunk 2)
+Server -> Client: FILE_WRITE (chunk 3)
+Server -> Client: FILE_WRITE_END
+Server -> Server: Снять блокировку чтения
+
+== Обновление локальной версии ==
+Client -> Client: Записать данные в file.txt
+Client -> Client: Обновить версию: v1 → v2
+
+@enduml

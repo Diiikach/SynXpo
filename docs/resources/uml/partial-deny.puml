@@ -1,0 +1,62 @@
+@startuml partial-deny
+title Частичный отказ: FREE и BLOCKED/DENIED
+
+actor "Клиент" as Client
+participant "Сервер" as Server
+
+== Запрос на несколько файлов ==
+Client -> Server: ASK_VERSION_INCREASE\n(file1.txt time=100,\nfile2.txt time=100,\nfile3.txt time=100)
+
+Server -> Server: Проверить file1.txt
+note right
+  LAST_TRY.time < 100
+  Файл свободен
+  Статус: FREE
+end note
+
+Server -> Server: Проверить file2.txt
+note right
+  Файл заблокирован другим клиентом
+  Статус: BLOCKED
+end note
+
+Server -> Server: Проверить file3.txt
+note right
+  LAST_TRY.time = 110 > 100
+  Статус: DENIED
+end note
+
+== Частичный отказ ==
+Server -> Server: Есть файлы != FREE
+Server -> Client: VERSION_INCREASE_DENY\n(file1: FREE,\nfile2: BLOCKED,\nfile3: DENIED)
+
+== Обработка клиентом ==
+Client -> Client: file1.txt: FREE → повторить запрос
+Client -> Client: file2.txt: BLOCKED → ждать CHECK_VERSION
+Client -> Client: file3.txt: DENIED → запустить обновление
+
+== Повторный запрос для FREE ==
+Client -> Server: ASK_VERSION_INCREASE\n(file1.txt time=100)
+Server -> Server: LAST_TRY = (100, connection)
+Server -> Server: Файл свободен
+Server -> Client: VERSION_INCREASE_ALLOW
+Client -> Server: FILE_WRITE...
+
+== Ожидание CHECK_VERSION для BLOCKED ==
+note over Client
+  Клиент ждет, когда
+  file2.txt освободится
+end note
+
+... время проходит ...
+
+Server -> Client: CHECK_VERSION\n(file2.txt v2)
+Client -> Server: ASK_VERSION_INCREASE\n(file2.txt time=100)
+
+== Обновление для DENIED ==
+Client -> Server: REQUEST_VERSION\n(directory_id)
+Server -> Client: CHECK_VERSION\n(file3.txt v5)
+Client -> Client: Локальная v1 < Серверная v5
+Client -> Server: REQUEST_FILE_CONTENT\n(file3.txt)
+
+@enduml

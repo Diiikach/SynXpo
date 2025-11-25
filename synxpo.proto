@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package synxpo;
+
+service SyncService {
+    rpc Stream(stream ClientMessage) returns (stream ServerMessage);
+}
+
+// ============================================================================
+// Common data types
+// ============================================================================
+
+message Timestamp {
+    uint64 time = 1;
+}
+
+message FilePath {
+    string directory_id = 1;
+    string path = 2;
+}
+
+enum FileStatus {
+    FREE = 0;
+    BLOCKED = 1;
+    DENIED = 2;
+}
+
+message FileVersion {
+    FilePath file_path = 1;
+    uint64 version = 2;
+}
+
+message FileStatusInfo {
+    FilePath file_path = 1;
+    FileStatus status = 2;
+}
+
+message FileChunk {
+    FilePath file_path = 1;
+    bytes data = 2;
+    uint64 offset = 3;
+}
+
+// ============================================================================
+// Client messages
+// ============================================================================
+
+message ClientMessage {
+    oneof message {
+        DirectoryCreate directory_create = 1;
+        DirectorySubscribe directory_subscribe = 2;
+        DirectoryUnsubscribe directory_unsubscribe = 3;
+        AskVersionIncrease ask_version_increase = 4;
+        RequestVersion request_version = 5;
+        RequestFileContent request_file_content = 6;
+        FileWrite file_write = 7;
+        FileWriteEnd file_write_end = 8;
+    }
+}
+
+message DirectoryCreate {
+}
+
+message DirectorySubscribe {
+    string directory_id = 1;
+}
+
+message DirectoryUnsubscribe {
+    string directory_id = 1;
+}
+
+message AskVersionIncrease {
+    message FileInfo {
+        FilePath file_path = 1;
+        Timestamp first_try_time = 2;
+    }
+    
+    repeated FileInfo files = 1;
+}
+
+message RequestVersion {
+    repeated string directory_ids = 1;
+}
+
+message RequestFileContent {
+    repeated FilePath file_paths = 1;
+}
+
+message FileWrite {
+    FileChunk chunk = 1;
+}
+
+message FileWriteEnd {
+}
+
+// ============================================================================
+// Server messages
+// ============================================================================
+
+message ServerMessage {
+    oneof message {
+        OkDirectoryCreated ok_directory_created = 1;
+        OkSubscribed ok_subscribed = 2;
+        OkUnsubscribed ok_unsubscribed = 3;
+        VersionIncreaseAllow version_increase_allow = 4;
+        VersionIncreaseDeny version_increase_deny = 5;
+        CheckVersion check_version = 6;
+        FileContentRequestAllow file_content_request_allow = 7;
+        FileContentRequestDeny file_content_request_deny = 8;
+        FileWrite file_write = 9;
+        FileWriteEnd file_write_end = 10;
+        Error error = 11;
+    }
+}
+
+message OkDirectoryCreated {
+    string directory_id = 1;
+}
+
+message OkSubscribed {
+    string directory_id = 1;
+}
+
+message OkUnsubscribed {
+    string directory_id = 1;
+}
+
+message VersionIncreaseAllow {
+    repeated FilePath file_paths = 1;
+}
+
+message VersionIncreaseDeny {
+    repeated FileStatusInfo files = 1;
+}
+
+message CheckVersion {
+    repeated FileVersion files = 1;
+}
+
+message FileContentRequestAllow {
+    repeated FilePath file_paths = 1;
+}
+
+message FileContentRequestDeny {
+    repeated FileStatusInfo files = 1;
+}
+
+message Error {
+    enum ErrorCode {
+        UNKNOWN = 0;
+        TIMEOUT = 1;
+        INVALID_REQUEST = 2;
+        FILE_NOT_FOUND = 3;
+        PERMISSION_DENIED = 4;
+        INTERNAL_ERROR = 5;
+        DIRECTORY_NOT_FOUND = 6;
+        ALREADY_SUBSCRIBED = 7;
+        NOT_SUBSCRIBED = 8;
+    }
+    
+    ErrorCode code = 1;
+    string message = 2;
+    repeated FilePath file_paths = 3;
+}

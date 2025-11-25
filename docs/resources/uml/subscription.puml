@@ -1,0 +1,57 @@
+@startuml subscription
+title Подписка на директории и создание новой директории
+
+actor "Клиент A" as ClientA
+participant "Сервер" as Server
+actor "Клиент B" as ClientB
+
+== Клиент A создает новую директорию ==
+ClientA -> Server: DIRECTORY_CREATE
+Server -> Server: Создать directory_id = "dir_123"
+Server -> Server: Подписать connection_A на dir_123
+Server -> ClientA: OK_DIRECTORY_CREATED\n(directory_id="dir_123")
+ClientA -> ClientA: Связать dir_123 с /home/user/docs
+ClientA -> ClientA: Инициировать отправку файлов
+
+== Клиент B подписывается ==
+ClientB -> Server: DIRECTORY_SUBSCRIBE\n(directory_id="dir_123")
+Server -> Server: Проверить существование dir_123
+Server -> Server: Подписать connection_B на dir_123
+Server -> ClientB: OK_SUBSCRIBED\n(directory_id="dir_123")
+ClientB -> ClientB: Связать dir_123 с /home/bob/documents
+
+== Запрос версий ==
+ClientB -> Server: REQUEST_VERSION\n(directory_ids=["dir_123"])
+Server -> ClientB: CHECK_VERSION\n(file1.txt v1, file2.txt v1)
+ClientB -> ClientB: Инициировать скачивание файлов
+
+== Клиент A изменяет файл ==
+ClientA -> Server: ASK_VERSION_INCREASE\n(dir_123/file1.txt)
+Server -> ClientA: VERSION_INCREASE_ALLOW
+ClientA -> Server: FILE_WRITE...
+ClientA -> Server: FILE_WRITE_END
+Server -> Server: Версия file1.txt: v1 → v2
+
+== Уведомление подписанных клиентов ==
+Server -> ClientB: CHECK_VERSION\n(file1.txt v2)
+note right
+  Клиент A не получает
+  (он автор изменений)
+end note
+ClientB -> ClientB: Обнаружено обновление
+ClientB -> Server: REQUEST_FILE_CONTENT\n(file1.txt)
+
+== Отписка ==
+ClientB -> Server: DIRECTORY_UNSUBSCRIBE\n(directory_id="dir_123")
+Server -> Server: Удалить подписку connection_B
+Server -> ClientB: OK_UNSUBSCRIBED\n(directory_id="dir_123")
+
+== После отписки ==
+ClientA -> Server: Изменение file2.txt...
+Server -> Server: Версия file2.txt: v1 → v2
+note over ClientB
+  CHECK_VERSION НЕ отправляется
+  ClientB отписан
+end note
+
+@enduml
