@@ -1,6 +1,17 @@
-add_executable(synxpo-client
-    client_main.cpp
+# Client sources - common files
+set(CLIENT_SOURCES
+    main.cpp
+    file_watcher.cpp
 )
+
+# Add platform-specific file watcher implementation
+if(UNIX AND NOT APPLE)
+    list(APPEND CLIENT_SOURCES file_watcher_linux.cpp)
+else()
+    message(FATAL_ERROR "Unsupported platform for FileWatcher")
+endif()
+
+add_executable(synxpo-client ${CLIENT_SOURCES})
 
 target_link_libraries(synxpo-client
     PRIVATE

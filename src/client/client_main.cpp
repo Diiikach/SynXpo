@@ -1,9 +1,12 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
+#include <chrono>
 
 #include <grpcpp/grpcpp.h>
 #include "synxpo.grpc.pb.h"
+#include "synxpo/client/file_watcher.h"
 
 using grpc::Channel;
 using grpc::ClientContext;
