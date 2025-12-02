@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+package synxpo;
+
+service SyncService {
+    rpc Stream(stream ClientMessage) returns (stream ServerMessage);
+}
+
+// ============================================================================
+// Common data types
+// ============================================================================
+
+message Timestamp {
+    uint64 time = 1; // Unix timestamp in microseconds
+}
+
+enum FileType {
+    FILE = 0;
+    FOLDER = 1;
+}
+
+enum FileStatus {
+    FREE = 0;
+    BLOCKED = 1;
+    DENIED = 2;
+}
+
+message FileMetadata {
+    optional string id = 1;  // uuid4, optional for new files
+    string directory_id = 2; // uuid4
+    uint64 version = 3;
+    uint64 content_changed_version = 4;
+    FileType type = 5;
+    string current_path = 6; // relative path within directory
+    bool deleted = 7;
+}
+
+message FileStatusInfo {
+    string id = 1; // file id
+    string directory_id = 2;
+    FileStatus status = 3;
+}
+
+message FileChunk {
+    string id = 1; // file id
+    string directory_id = 2;
+    bytes data = 3;
+    uint64 offset = 4;
+}
+
+// ============================================================================
+// Client messages
+// ============================================================================
+
+message ClientMessage {
+    oneof message {
+        DirectoryCreate directory_create = 1;
+        DirectorySubscribe directory_subscribe = 2;
+        DirectoryUnsubscribe directory_unsubscribe = 3;
+        AskVersionIncrease ask_version_increase = 4;
+        RequestVersion request_version = 5;
+        RequestFileContent request_file_content = 6;
+        FileWrite file_write = 7;
+        FileWriteEnd file_write_end = 8;
+    }
+}
+
+message DirectoryCreate {
+}
+
+message DirectorySubscribe {
+    string directory_id = 1;
+}
+
+message DirectoryUnsubscribe {
+    string directory_id = 1;
+}
+
+message AskVersionIncrease {
+    message FileInfo {
+        optional string id = 1;  // uuid4, optional for new files
+        string directory_id = 2; // uuid4
+        Timestamp first_try_time = 3;
+        string current_path = 4; // relative path within directory
+        bool deleted = 5;
+        bool content_changed = 6; // whether file content changed
+        FileType type = 7;
+    }
+    
+    repeated FileInfo files = 1;
+}
+
+message RequestVersion {
+    message FileRequest {
+        oneof request {
+            string directory_id = 1; // request all files in directory
+            FileId file_id = 2;      // request specific file
+        }
+    }
+    
+    message FileId {
+        string id = 1;
+        string directory_id = 2;
+    }
+    
+    repeated FileRequest requests = 1;
+}
+
+message RequestFileContent {
+    message FileId {
+        string id = 1;
+        string directory_id = 2;
+    }
+    
+    repeated FileId files = 1;
+}
+
+message FileWrite {
+    FileChunk chunk = 1;
+}
+
+message FileWriteEnd {
+}
+
+// ============================================================================
+// Server messages
+// ============================================================================
+
+message ServerMessage {
+    oneof message {
+        OkDirectoryCreated ok_directory_created = 1;
+        OkSubscribed ok_subscribed = 2;
+        OkUnsubscribed ok_unsubscribed = 3;
+        VersionIncreaseAllow version_increase_allow = 4;
+        VersionIncreaseDeny version_increase_deny = 5;
+        VersionIncreased version_increased = 6;
+        CheckVersion check_version = 7;
+        FileContentRequestAllow file_content_request_allow = 8;
+        FileContentRequestDeny file_content_request_deny = 9;
+        FileWrite file_write = 10;
+        FileWriteEnd file_write_end = 11;
+        Error error = 12;
+    }
+}
+
+message OkDirectoryCreated {
+    string directory_id = 1;
+}
+
+message OkSubscribed {
+    string directory_id = 1;
+}
+
+message OkUnsubscribed {
+    string directory_id = 1;
+}
+
+message VersionIncreaseAllow {
+}
+
+message VersionIncreaseDeny {
+    repeated FileStatusInfo files = 1;
+}
+
+message VersionIncreased {
+    repeated FileMetadata files = 1;
+}
+
+message CheckVersion {
+    repeated FileMetadata files = 1;
+}
+
+message FileContentRequestAllow {
+}
+
+message FileContentRequestDeny {
+    repeated FileStatusInfo files = 1;
+}
+
+message Error {
+    enum ErrorCode {
+        UNKNOWN = 0;
+        TIMEOUT = 1;
+        INVALID_REQUEST = 2;
+        FILE_NOT_FOUND = 3;
+        PERMISSION_DENIED = 4;
+        INTERNAL_ERROR = 5;
+        DIRECTORY_NOT_FOUND = 6;
+        ALREADY_SUBSCRIBED = 7;
+        NOT_SUBSCRIBED = 8;
+    }
+    
+    ErrorCode code = 1;
+    string message = 2;
+    repeated string file_ids = 3;
+}

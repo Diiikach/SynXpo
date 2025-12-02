@@ -1,0 +1,44 @@
+@startuml conflict-blocked
+title Конфликт: Файл заблокирован другим клиентом
+
+actor "Клиент A" as ClientA
+participant "Сервер" as Server
+actor "Клиент B" as ClientB
+
+== Клиент A начинает загрузку ==
+ClientA -> Server: ASK_VERSION_INCREASE\n(file.txt, time=100)
+Server -> Server: LAST_TRY = (100, connection_A)
+Server -> Server: Установить блокировку
+Server -> ClientA: VERSION_INCREASE_ALLOW
+ClientA -> Server: FILE_WRITE (chunk 1)
+
+== Клиент B пытается загрузить ==
+ClientB -> Server: ASK_VERSION_INCREASE\n(file.txt, time=105)
+Server -> Server: Проверить LAST_TRY
+note right
+  LAST_TRY.time = 100 < 105
+  Но файл ЗАБЛОКИРОВАН
+end note
+Server -> ClientB: VERSION_INCREASE_DENY\n(file.txt: BLOCKED)
+
+== Клиент B ждет ==
+ClientB -> ClientB: Запомнить file.txt как BLOCKED
+ClientB -> ClientB: Ждать CHECK_VERSION
+
+== Клиент A завершает загрузку ==
+ClientA -> Server: FILE_WRITE (chunk 2)
+ClientA -> Server: FILE_WRITE_END
+Server -> Server: Версия: v1 → v2
+Server -> Server: Снять блокировку
+Server -> ClientB: CHECK_VERSION\n(file.txt, version=2)
+
+== Клиент B повторяет попытку ==
+ClientB -> ClientB: Получен CHECK_VERSION\nдля заблокированного файла
+ClientB -> Server: ASK_VERSION_INCREASE\n(file.txt, time=105)
+Server -> Server: LAST_TRY.time = 100 < 105
+Server -> Server: Файл свободен
+Server -> Server: LAST_TRY = (105, connection_B)
+Server -> ClientB: VERSION_INCREASE_ALLOW
+ClientB -> Server: FILE_WRITE...
+
+@enduml
