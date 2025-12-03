@@ -22,9 +22,6 @@ public:
         if (watch_thread_.joinable()) {
             watch_thread_.join();
         }
-        if (inotify_fd_ != -1) {
-            close(inotify_fd_);
-        }
     }
 
     void StartImpl() override {

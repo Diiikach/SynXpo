@@ -1,10 +1,9 @@
-# Client sources - common files
 set(CLIENT_SOURCES
     main.cpp
     file_watcher.cpp
+    grpc_client.cpp
 )
 
-# Add platform-specific file watcher implementation
 if(UNIX AND NOT APPLE)
     list(APPEND CLIENT_SOURCES file_watcher_linux.cpp)
 else()
