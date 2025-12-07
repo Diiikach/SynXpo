@@ -2,6 +2,7 @@ set(CLIENT_SOURCES
     main.cpp
     file_watcher.cpp
     grpc_client.cpp
+    config.cpp
 )
 
 if(UNIX AND NOT APPLE)
