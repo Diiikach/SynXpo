@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +29,10 @@ public:
     std::vector<std::string> ListDirectories() const override;
     absl::StatusOr<std::vector<FileMetadata>> ListDirectoryFiles(
         const std::string& directory_id) const override;
+    
+    // Get directory ID by file path
+    std::optional<std::string> GetDirectoryIdByPath(
+        const std::filesystem::path& file_path) const override;
     
     // Get file metadata by id
     absl::StatusOr<FileMetadata> GetFileMetadata(

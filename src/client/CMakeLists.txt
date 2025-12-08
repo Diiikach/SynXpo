@@ -3,6 +3,11 @@ set(CLIENT_SOURCES
     file_watcher.cpp
     grpc_client.cpp
     config.cpp
+    synchronizer/synchronizer.cpp
+    synchronizer/synchronizer_init.cpp
+    synchronizer/synchronizer_upload.cpp
+    synchronizer/synchronizer_download.cpp
+    synchronizer/synchronizer_handlers.cpp
 )
 
 if(UNIX AND NOT APPLE)
@@ -16,6 +21,7 @@ add_executable(synxpo-client ${CLIENT_SOURCES})
 target_link_libraries(synxpo-client
     PRIVATE
         synxpo_proto
+        synxpo_common
         Threads::Threads
 )
 

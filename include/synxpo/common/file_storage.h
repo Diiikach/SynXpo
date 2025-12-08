@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,10 @@ public:
     virtual std::vector<std::string> ListDirectories() const = 0;
     virtual absl::StatusOr<std::vector<FileMetadata>> ListDirectoryFiles(
         const std::string& directory_id) const = 0;
+    
+    // Get directory ID by file path
+    virtual std::optional<std::string> GetDirectoryIdByPath(
+        const std::filesystem::path& file_path) const = 0;
     
     // Get file metadata by id
     virtual absl::StatusOr<FileMetadata> GetFileMetadata(

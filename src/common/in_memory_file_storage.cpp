@@ -51,6 +51,34 @@ absl::StatusOr<std::vector<FileMetadata>> InMemoryFileMetadataStorage::ListDirec
     return result;
 }
 
+std::optional<std::string> InMemoryFileMetadataStorage::GetDirectoryIdByPath(
+    const std::filesystem::path& file_path) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    std::error_code ec;
+    const auto absolute_path = std::filesystem::absolute(file_path, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    
+    for (const auto& [dir_id, dir_info] : directories_) {
+        const auto rel_path = std::filesystem::relative(absolute_path, dir_info.path, ec);
+        if (ec) {
+            continue;
+        }
+        
+        // Check that the path doesn't escape the directory (no ".." prefix)
+        const auto rel_str = rel_path.string();
+        if (rel_str.size() >= 2 && rel_str.substr(0, 2) == "..") {
+            continue;
+        }
+        
+        return dir_id;
+    }
+    
+    return std::nullopt;
+}
+
 absl::StatusOr<FileMetadata> InMemoryFileMetadataStorage::GetFileMetadata(
     const std::string& file_id,
     const std::string& directory_id) const {
