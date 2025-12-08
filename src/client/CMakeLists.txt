@@ -1,6 +1,6 @@
 set(CLIENT_SOURCES
     main.cpp
-    file_watcher.cpp
+    file_watcher/file_watcher.cpp
     grpc_client.cpp
     config.cpp
     synchronizer/synchronizer.cpp
@@ -11,7 +11,7 @@ set(CLIENT_SOURCES
 )
 
 if(UNIX AND NOT APPLE)
-    list(APPEND CLIENT_SOURCES file_watcher_linux.cpp)
+    list(APPEND CLIENT_SOURCES file_watcher/file_watcher_linux.cpp)
 else()
     message(FATAL_ERROR "Unsupported platform for FileWatcher")
 endif()
