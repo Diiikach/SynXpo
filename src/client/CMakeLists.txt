@@ -21,17 +21,11 @@ endif()
 
 if(FSWATCH_FOUND)
     list(APPEND CLIENT_SOURCES file_watcher/file_watcher_fswatch.cpp
-        main.cpp
-        file_watcher.cpp
-        grpc_client.cpp
 )
     message(STATUS "Using fswatch for file watching")
 elseif(UNIX AND NOT APPLE)
     # Fallback to Linux-specific inotify implementation
     list(APPEND CLIENT_SOURCES file_watcher/file_watcher_linux.cpp
-        main.cpp
-        file_watcher.cpp
-        grpc_client.cpp
 )
     message(STATUS "Using inotify for file watching")
 else()
