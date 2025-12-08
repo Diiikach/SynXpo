@@ -3,8 +3,6 @@ add_library(synxpo_proto
     synxpo.proto
 )
 
-include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
-
 target_link_libraries(synxpo_proto
     PUBLIC
         ${_GRPC_GRPCPP}
