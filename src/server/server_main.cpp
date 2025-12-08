@@ -1,3 +1,5 @@
+#include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -9,6 +11,7 @@
 #include <optional>
 #include <random>
 #include <sstream>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -69,16 +72,29 @@ struct PendingUpload {
     std::filesystem::path path;
 };
 
+struct Subscriber {
+    explicit Subscriber(ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* s)
+        : stream(s) {}
+
+    ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* stream;
+    std::mutex write_mutex;
+    std::atomic<bool> active{true};
+};
+
 class SyncServiceImpl final : public synxpo::SyncService::Service {
 public:
     explicit SyncServiceImpl(std::filesystem::path storage_root)
         : storage_root_(std::move(storage_root)) {
         std::filesystem::create_directories(storage_root_);
+        LoadExistingDirectories();
     }
 
     Status Stream(ServerContext* context,
                   ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* stream) override {
         std::cout << "Client connected" << std::endl;
+
+        auto subscriber = std::make_shared<Subscriber>(stream);
+        std::vector<std::string> subscribed_dirs;
 
         synxpo::ClientMessage client_msg;
         while (stream->Read(&client_msg)) {
@@ -87,10 +103,10 @@ public:
                     HandleDirectoryCreate(client_msg, stream);
                     break;
                 case synxpo::ClientMessage::kDirectorySubscribe:
-                    HandleDirectorySubscribe(client_msg, stream);
+                    HandleDirectorySubscribe(client_msg, stream, subscriber, subscribed_dirs);
                     break;
                 case synxpo::ClientMessage::kDirectoryUnsubscribe:
-                    HandleDirectoryUnsubscribe(client_msg, stream);
+                    HandleDirectoryUnsubscribe(client_msg, stream, subscriber, subscribed_dirs);
                     break;
                 case synxpo::ClientMessage::kRequestVersion:
                     HandleRequestVersion(client_msg, stream);
@@ -112,12 +128,163 @@ public:
             }
         }
 
+        subscriber->active = false;
+        RemoveSubscriberFromAll(subscriber, subscribed_dirs);
+
         CloseAllPendingWrites();
         std::cout << "Client disconnected" << std::endl;
         return Status::OK;
     }
 
 private:
+    static std::string HashString(const std::string& input) {
+        constexpr uint64_t kOffset = 14695981039346656037ULL;
+        constexpr uint64_t kPrime = 1099511628211ULL;
+        uint64_t hash = kOffset;
+        for (unsigned char c : input) {
+            hash ^= c;
+            hash *= kPrime;
+        }
+        std::ostringstream oss;
+        oss << std::hex << std::setw(16) << std::setfill('0') << hash;
+        return oss.str();
+    }
+
+    static std::string MakeDeterministicId(const std::string& directory_id,
+                                           const std::filesystem::path& rel_path) {
+        return HashString(directory_id + ":" + rel_path.string());
+    }
+
+    void LoadExistingDirectories() {
+        for (const auto& entry : std::filesystem::directory_iterator(storage_root_)) {
+            if (!entry.is_directory()) {
+                continue;
+            }
+
+            DirectoryRecord dir_record;
+            dir_record.id = entry.path().filename().string();
+            dir_record.root = entry.path();
+
+            for (auto it = std::filesystem::recursive_directory_iterator(entry.path());
+                 it != std::filesystem::recursive_directory_iterator(); ++it) {
+                if (!it->is_regular_file()) {
+                    continue;
+                }
+
+                auto rel = std::filesystem::relative(it->path(), dir_record.root);
+                FileRecord rec;
+                rec.meta.set_id(MakeDeterministicId(dir_record.id, rel));
+                rec.meta.set_directory_id(dir_record.id);
+                rec.meta.set_version(1);
+                rec.meta.set_content_changed_version(1);
+                rec.meta.set_type(synxpo::FILE);
+                rec.meta.set_current_path(rel.generic_string());
+                rec.meta.set_deleted(false);
+                rec.path = it->path();
+
+                dir_record.files[rec.meta.id()] = rec;
+            }
+
+            std::lock_guard<std::mutex> lock(mutex_);
+            directories_[dir_record.id] = std::move(dir_record);
+        }
+    }
+
+    void NotifySubscriberWithState(const std::string& dir_id,
+                                   const std::shared_ptr<Subscriber>& subscriber) {
+        std::vector<synxpo::FileMetadata> files;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto dir_it = directories_.find(dir_id);
+            if (dir_it == directories_.end()) {
+                return;
+            }
+            for (const auto& [_, rec] : dir_it->second.files) {
+                files.push_back(rec.meta);
+            }
+        }
+
+        synxpo::ServerMessage msg;
+        auto* check = msg.mutable_check_version();
+        for (const auto& meta : files) {
+            *check->add_files() = meta;
+        }
+
+        if (!subscriber->active.load()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(subscriber->write_mutex);
+        subscriber->stream->Write(msg);
+    }
+
+    void NotifySubscribers(const std::string& directory_id) {
+        std::vector<std::shared_ptr<Subscriber>> targets;
+        std::vector<synxpo::FileMetadata> files;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto dir_it = directories_.find(directory_id);
+            if (dir_it == directories_.end()) {
+                return;
+            }
+            for (const auto& [_, rec] : dir_it->second.files) {
+                files.push_back(rec.meta);
+            }
+
+            auto sub_it = subscribers_.find(directory_id);
+            if (sub_it != subscribers_.end()) {
+                for (auto it = sub_it->second.begin(); it != sub_it->second.end();) {
+                    if (auto s = it->lock()) {
+                        targets.push_back(s);
+                        ++it;
+                    } else {
+                        it = sub_it->second.erase(it);
+                    }
+                }
+            }
+        }
+
+        if (targets.empty()) {
+            return;
+        }
+
+        synxpo::ServerMessage msg;
+        auto* check = msg.mutable_check_version();
+        for (const auto& meta : files) {
+            *check->add_files() = meta;
+        }
+
+        for (const auto& sub : targets) {
+            if (!sub->active.load()) {
+                continue;
+            }
+            std::lock_guard<std::mutex> lock(sub->write_mutex);
+            sub->stream->Write(msg);
+        }
+    }
+
+    void RemoveSubscriber(const std::string& dir_id,
+                          const std::shared_ptr<Subscriber>& subscriber) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = subscribers_.find(dir_id);
+        if (it == subscribers_.end()) {
+            return;
+        }
+        it->second.erase(
+            std::remove_if(it->second.begin(), it->second.end(),
+                           [&](const std::weak_ptr<Subscriber>& w) {
+                               auto s = w.lock();
+                               return !s || s == subscriber;
+                           }),
+            it->second.end());
+    }
+
+    void RemoveSubscriberFromAll(const std::shared_ptr<Subscriber>& subscriber,
+                                 const std::vector<std::string>& dirs) {
+        for (const auto& dir : dirs) {
+            RemoveSubscriber(dir, subscriber);
+        }
+    }
+
     void HandleDirectoryCreate(const synxpo::ClientMessage& msg,
                                ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* stream) {
         std::string dir_id = GenerateUuid();
@@ -140,7 +307,9 @@ private:
     }
 
     void HandleDirectorySubscribe(const synxpo::ClientMessage& msg,
-                                  ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* stream) {
+                                  ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* stream,
+                                  const std::shared_ptr<Subscriber>& subscriber,
+                                  std::vector<std::string>& subscribed_dirs) {
         synxpo::ServerMessage response;
         if (msg.has_request_id()) {
             response.set_request_id(msg.request_id());
@@ -153,13 +322,24 @@ private:
             error->set_message("Directory not found");
         } else {
             response.mutable_ok_subscribed()->set_directory_id(dir_id);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                subscribers_[dir_id].push_back(subscriber);
+            }
+            subscribed_dirs.push_back(dir_id);
         }
 
         stream->Write(response);
+
+        if (DirectoryExists(dir_id)) {
+            NotifySubscriberWithState(dir_id, subscriber);
+        }
     }
 
     void HandleDirectoryUnsubscribe(const synxpo::ClientMessage& msg,
-                                    ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* stream) {
+                                    ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* stream,
+                                    const std::shared_ptr<Subscriber>& subscriber,
+                                    std::vector<std::string>& subscribed_dirs) {
         synxpo::ServerMessage response;
         if (msg.has_request_id()) {
             response.set_request_id(msg.request_id());
@@ -172,6 +352,9 @@ private:
             error->set_message("Directory not found");
         } else {
             response.mutable_ok_unsubscribed()->set_directory_id(dir_id);
+            RemoveSubscriber(dir_id, subscriber);
+            auto it = std::remove(subscribed_dirs.begin(), subscribed_dirs.end(), dir_id);
+            subscribed_dirs.erase(it, subscribed_dirs.end());
         }
 
         stream->Write(response);
@@ -220,6 +403,7 @@ private:
                                   ServerReaderWriter<synxpo::ServerMessage, synxpo::ClientMessage>* stream) {
         std::vector<PendingUpload> uploads;
         std::vector<synxpo::FileMetadata> updated_without_upload;
+        std::set<std::string> touched_dirs;
 
         for (const auto& file_info : msg.ask_version_increase().files()) {
             std::string dir_id = file_info.directory_id();
@@ -229,6 +413,7 @@ private:
                 continue;
             }
             DirectoryRecord& dir = dir_it->second;
+            touched_dirs.insert(dir_id);
 
             std::string file_id = file_info.has_id() ? file_info.id() : GenerateUuid();
             auto& rec = dir.files[file_id];
@@ -282,6 +467,10 @@ private:
         }
 
         stream->Write(response);
+
+        for (const auto& dir_id : touched_dirs) {
+            NotifySubscribers(dir_id);
+        }
     }
 
     void HandleRequestFileContent(const synxpo::ClientMessage& msg,
@@ -381,6 +570,13 @@ private:
 
         if (increased->files_size() > 0) {
             stream->Write(msg);
+            std::set<std::string> dirs;
+            for (const auto& file_meta : increased->files()) {
+                dirs.insert(file_meta.directory_id());
+            }
+            for (const auto& dir_id : dirs) {
+                NotifySubscribers(dir_id);
+            }
         }
     }
 
@@ -415,6 +611,7 @@ private:
     std::filesystem::path storage_root_;
     std::mutex mutex_;
     std::unordered_map<std::string, DirectoryRecord> directories_;
+    std::unordered_map<std::string, std::vector<std::weak_ptr<Subscriber>>> subscribers_;  // dir_id -> subscribers
 
     std::unordered_map<std::string, PendingUpload> pending_uploads_;  // key -> upload info
     std::mutex write_mutex_;
