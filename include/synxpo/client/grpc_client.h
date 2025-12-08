@@ -34,8 +34,13 @@ public:
     void Disconnect();
     bool IsConnected() const;
 
-    // Send message and wait for confirmation
+    // Send message without waiting for response
     absl::Status SendMessage(const ClientMessage& message);
+    
+    // Send message and wait for response with matching request_id
+    absl::StatusOr<ServerMessage> SendMessageWithResponse(
+        ClientMessage& message,
+        std::chrono::milliseconds timeout = std::chrono::seconds(30));
     
     using ServerMessageCallback = std::function<void(const ServerMessage& message)>;
     void SetMessageCallback(ServerMessageCallback callback);
@@ -56,6 +61,9 @@ private:
     void ReceiveLoop();
     void ProcessMessage(const ServerMessage& message);
     void CallbackWorkerLoop();
+    
+    // Generate UUID v4 for request_id
+    static std::string GenerateUuid();
 
     struct Waiter {
         MessagePredicate predicate;
