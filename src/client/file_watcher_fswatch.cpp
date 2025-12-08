@@ -1,4 +1,3 @@
-
 #include "synxpo/client/file_watcher.h"
 
 #include <libfswatch/c++/monitor.hpp>
@@ -64,6 +63,12 @@ public:
     }
 
 private:
+    // Static callback wrapper for fswatch
+    static void StaticEventCallback(const std::vector<fsw::event>& events, void* context) {
+        auto* impl = static_cast<FswatchFileWatcherImpl*>(context);
+        impl->ProcessEvents(events);
+    }
+
     void WatchThread() {
         try {
             std::vector<std::string> paths;
@@ -103,22 +108,26 @@ private:
                 return;
             }
 
-            // Create monitor
-            monitor_ = fsw::monitor_factory::create_monitor(
+            // Create monitor with static callback function pointer
+            fsw::monitor* raw_monitor = fsw::monitor_factory::create_monitor(
                 fsw_monitor_type::system_default_monitor_type,
                 paths,
-                [this](const std::vector<fsw::event>& events, void* context) {
-                    this->ProcessEvents(events);
-                }
+                &StaticEventCallback
             );
 
-            if (!monitor_) {
+            if (!raw_monitor) {
                 std::lock_guard<std::mutex> lock(init_mutex_);
                 init_error_ = "Failed to create fswatch monitor";
                 init_done_ = true;
                 init_cv_.notify_one();
                 return;
             }
+
+            // Wrap in unique_ptr
+            monitor_.reset(raw_monitor);
+
+            // Set context to this instance
+            monitor_->set_context(this);
 
             // Configure monitor
             monitor_->set_recursive(false);  // We handle recursion manually
