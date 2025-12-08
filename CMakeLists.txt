@@ -11,11 +11,13 @@ include(FetchContent)
 find_package(Threads REQUIRED)
 
 # Try to find installed gRPC first
-find_package(Protobuf CONFIG)
-find_package(gRPC CONFIG)
+if(NOT FORCE_GRPC_DOWNLOAD)
+    find_package(Protobuf CONFIG)
+    find_package(gRPC CONFIG)
+endif()
 
 # If gRPC not found, fetch it automatically
-if(NOT gRPC_FOUND)
+if(NOT gRPC_FOUND OR FORCE_GRPC_DOWNLOAD)
     message(STATUS "gRPC not found, fetching from source...")
     
     FetchContent_Declare(
@@ -59,5 +61,6 @@ endif()
 
 # Add subdirectories
 add_subdirectory(src/proto)
+add_subdirectory(src/common)
 add_subdirectory(src/server)
 add_subdirectory(src/client)
