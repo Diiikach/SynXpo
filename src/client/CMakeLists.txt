@@ -20,16 +20,16 @@ if(PkgConfig_FOUND)
 endif()
 
 if(FSWATCH_FOUND)
-    list(APPEND CLIENT_SOURCES file_watcher/file_watcher_fswatch.cpp
-)
+    list(APPEND CLIENT_SOURCES file_watcher/file_watcher_fswatch.cpp)
     message(STATUS "Using fswatch for file watching")
 elseif(UNIX AND NOT APPLE)
     # Fallback to Linux-specific inotify implementation
-    list(APPEND CLIENT_SOURCES file_watcher/file_watcher_linux.cpp
-)
+    list(APPEND CLIENT_SOURCES file_watcher/file_watcher_linux.cpp)
     message(STATUS "Using inotify for file watching")
 else()
-    message(FATAL_ERROR "Unsupported platform for FileWatcher. Please install fswatch library.")
+    # Portable polling-based watcher (works on Windows/macOS without fswatch)
+    list(APPEND CLIENT_SOURCES file_watcher/file_watcher_polling.cpp)
+    message(STATUS "Using portable polling file watcher")
 endif()
 
 add_executable(synxpo-client ${CLIENT_SOURCES})
