@@ -53,6 +53,8 @@ message FileChunk {
 // ============================================================================
 
 message ClientMessage {
+    optional string request_id = 100; // uuid4 to correlate request with response
+    
     oneof message {
         DirectoryCreate directory_create = 1;
         DirectorySubscribe directory_subscribe = 2;
@@ -127,6 +129,8 @@ message FileWriteEnd {
 // ============================================================================
 
 message ServerMessage {
+    optional string request_id = 100; // Correlates with ClientMessage.request_id for responses
+    
     oneof message {
         OkDirectoryCreated ok_directory_created = 1;
         OkSubscribed ok_subscribed = 2;
