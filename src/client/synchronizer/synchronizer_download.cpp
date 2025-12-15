@@ -1,10 +1,12 @@
 #include "synxpo/client/synchronizer.h"
+#include "synxpo/client/logger.h"
 
 #include <unordered_map>
 
 namespace synxpo {
 
 absl::Status Synchronizer::RequestVersions(const std::string& directory_id) {
+    LOG_DEBUG("RequestVersions: directory_id=" + directory_id);
     ClientMessage msg;
     auto* request = msg.mutable_request_version();
     auto* file_request = request->add_requests();
@@ -33,6 +35,7 @@ absl::Status Synchronizer::RequestFileVersions(
 absl::Status Synchronizer::ProcessCheckVersion(
     const std::string& directory_id,
     const std::vector<FileMetadata>& server_files) {
+    LOG_INFO("ProcessCheckVersion: directory_id=" + directory_id + " server_files=" + std::to_string(server_files.size()));
     
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -40,6 +43,9 @@ absl::Status Synchronizer::ProcessCheckVersion(
     }
     
     auto diff = CalculateVersionDiff(directory_id, server_files);
+    LOG_DEBUG("VersionDiff: to_download=" + std::to_string(diff.to_download.size()) + 
+              " to_upload=" + std::to_string(diff.to_upload.size()) + 
+              " to_rename_delete=" + std::to_string(diff.to_rename_delete.size()));
     
     // Apply renames and deletes first
     if (!diff.to_rename_delete.empty()) {
@@ -337,8 +343,8 @@ absl::Status Synchronizer::DeleteMissingFiles(
             std::filesystem::remove(file_path);
         }
         
-        auto remove_status = storage_.RemoveFile(directory_id, file_id);
-        (void)remove_status;  // Continue even if removal fails
+        auto remove_status = storage_.RemoveFile(file_id, directory_id);
+        (void)remove_status;  // Ignore storage errors
     }
     
     return absl::OkStatus();

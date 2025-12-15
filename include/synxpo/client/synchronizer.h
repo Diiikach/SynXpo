@@ -46,6 +46,9 @@ public:
     
     bool IsAutoSyncRunning() const;
     
+    // Set config file path for saving
+    void SetConfigPath(const std::filesystem::path& config_path);
+    
     // One-time synchronization of all directories
     absl::Status SyncOnce();
     
@@ -70,6 +73,9 @@ private:
     
     // Subscribe to existing directory
     absl::Status SubscribeToDirectory(const std::string& directory_id);
+    
+    // Upload all local files in directory (for newly created directories)
+    absl::Status UploadLocalFiles(const std::string& directory_id);
     
     // Handle file event from FileWatcher
     void OnFileEvent(const FileEvent& event);
@@ -196,6 +202,8 @@ private:
     IFileMetadataStorage& storage_;
     GRPCClient& grpc_client_;
     FileWatcher& file_watcher_;
+    
+    std::filesystem::path config_path_;
     
     std::atomic<bool> auto_sync_running_{false};
     std::atomic<bool> debounce_thread_running_{false};
