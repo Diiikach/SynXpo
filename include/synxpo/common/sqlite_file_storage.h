@@ -1,66 +1,65 @@
 #pragma once
 
 #include <filesystem>
-#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include <absl/status/status.h>
+#include <absl/status/statusor.h>
+
 #include "synxpo/common/file_storage.h"
+
+struct sqlite3;
 
 namespace synxpo {
 
-class InMemoryFileMetadataStorage : public IFileMetadataStorage {
+class SqliteFileMetadataStorage : public IFileMetadataStorage {
 public:
-    InMemoryFileMetadataStorage() = default;
-    ~InMemoryFileMetadataStorage() override = default;
+    explicit SqliteFileMetadataStorage(const std::filesystem::path& db_path);
+    ~SqliteFileMetadataStorage() override;
 
-    InMemoryFileMetadataStorage(const InMemoryFileMetadataStorage&) = delete;
-    InMemoryFileMetadataStorage& operator=(const InMemoryFileMetadataStorage&) = delete;
-    InMemoryFileMetadataStorage(InMemoryFileMetadataStorage&&) = delete;
-    InMemoryFileMetadataStorage& operator=(InMemoryFileMetadataStorage&&) = delete;
-    
-    // Directory management
-    void RegisterDirectory(const std::string& directory_id, 
-                          const std::filesystem::path& directory_path) override;
+    SqliteFileMetadataStorage(const SqliteFileMetadataStorage&) = delete;
+    SqliteFileMetadataStorage& operator=(const SqliteFileMetadataStorage&) = delete;
+    SqliteFileMetadataStorage(SqliteFileMetadataStorage&&) = delete;
+    SqliteFileMetadataStorage& operator=(SqliteFileMetadataStorage&&) = delete;
+
+    void RegisterDirectory(const std::string& directory_id,
+                           const std::filesystem::path& directory_path) override;
     void UnregisterDirectory(const std::string& directory_id) override;
     std::vector<std::string> ListDirectories() const override;
     absl::StatusOr<std::vector<FileMetadata>> ListDirectoryFiles(
         const std::string& directory_id) const override;
-    
-    // Get directory ID by file path
+
     std::optional<std::string> GetDirectoryIdByPath(
         const std::filesystem::path& file_path) const override;
-    
-    // Get file metadata by id
+
     absl::StatusOr<FileMetadata> GetFileMetadata(
         const std::string& directory_id,
         const std::string& file_id) const override;
 
-    // Get file metadata by path
     absl::StatusOr<FileMetadata> GetFileMetadata(
         const std::string& directory_id,
         const std::filesystem::path& path) const override;
 
-    // Update file metadata
     absl::Status UpsertFile(const FileMetadata& metadata) override;
 
-    // Remove file
     absl::Status RemoveFile(
         const std::string& directory_id,
         const std::string& file_id) override;
 
 private:
-    struct DirectoryInfo {
-        std::filesystem::path path;
-        std::unordered_map<std::string, FileMetadata> files;
-        std::map<std::filesystem::path, std::string> path_to_id;
-    };
-    
+    absl::Status InitSchemaLocked();
+    absl::Status LoadDirectoriesLocked();
+
+    absl::Status ExecLocked(const char* sql) const;
+
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, DirectoryInfo> directories_;
+    sqlite3* db_ = nullptr;
+
+    std::unordered_map<std::string, std::filesystem::path> directories_;
 };
 
 }  // namespace synxpo
