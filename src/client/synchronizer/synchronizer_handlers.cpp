@@ -1,8 +1,25 @@
 #include "synxpo/client/synchronizer.h"
+#include "synxpo/client/logger.h"
 
 namespace synxpo {
 
 void Synchronizer::OnServerMessage(const ServerMessage& message) {
+    std::string msg_type = "UNKNOWN";
+    switch (message.message_case()) {
+        case ServerMessage::kOkDirectoryCreated: msg_type = "OK_DIRECTORY_CREATED"; break;
+        case ServerMessage::kOkSubscribed: msg_type = "OK_SUBSCRIBED"; break;
+        case ServerMessage::kVersionIncreaseAllow: msg_type = "VERSION_INCREASE_ALLOW"; break;
+        case ServerMessage::kVersionIncreaseDeny: msg_type = "VERSION_INCREASE_DENY"; break;
+        case ServerMessage::kVersionIncreased: msg_type = "VERSION_INCREASED"; break;
+        case ServerMessage::kCheckVersion: msg_type = "CHECK_VERSION"; break;
+        case ServerMessage::kFileContentRequestAllow: msg_type = "FILE_CONTENT_REQUEST_ALLOW"; break;
+        case ServerMessage::kFileContentRequestDeny: msg_type = "FILE_CONTENT_REQUEST_DENY"; break;
+        case ServerMessage::kFileWrite: msg_type = "FILE_WRITE"; break;
+        case ServerMessage::kFileWriteEnd: msg_type = "FILE_WRITE_END"; break;
+        case ServerMessage::kError: msg_type = "ERROR"; break;
+        default: break;
+    }
+    LOG_DEBUG("[RECV] " + msg_type);
     switch (message.message_case()) {
         case ServerMessage::kOkDirectoryCreated:
             HandleOkDirectoryCreated(message.ok_directory_created());

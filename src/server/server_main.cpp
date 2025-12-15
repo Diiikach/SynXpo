@@ -100,27 +100,35 @@ public:
         while (stream->Read(&client_msg)) {
             switch (client_msg.message_case()) {
                 case synxpo::ClientMessage::kDirectoryCreate:
+                    std::cout << "[RECV] DIRECTORY_CREATE" << std::endl;
                     HandleDirectoryCreate(client_msg, stream);
                     break;
                 case synxpo::ClientMessage::kDirectorySubscribe:
+                    std::cout << "[RECV] DIRECTORY_SUBSCRIBE: " << client_msg.directory_subscribe().directory_id() << std::endl;
                     HandleDirectorySubscribe(client_msg, stream, subscriber, subscribed_dirs);
                     break;
                 case synxpo::ClientMessage::kDirectoryUnsubscribe:
+                    std::cout << "[RECV] DIRECTORY_UNSUBSCRIBE: " << client_msg.directory_unsubscribe().directory_id() << std::endl;
                     HandleDirectoryUnsubscribe(client_msg, stream, subscriber, subscribed_dirs);
                     break;
                 case synxpo::ClientMessage::kRequestVersion:
+                    std::cout << "[RECV] REQUEST_VERSION (" << client_msg.request_version().requests_size() << " requests)" << std::endl;
                     HandleRequestVersion(client_msg, stream);
                     break;
                 case synxpo::ClientMessage::kAskVersionIncrease:
+                    std::cout << "[RECV] ASK_VERSION_INCREASE (" << client_msg.ask_version_increase().files_size() << " files)" << std::endl;
                     HandleAskVersionIncrease(client_msg, stream);
                     break;
                 case synxpo::ClientMessage::kRequestFileContent:
+                    std::cout << "[RECV] REQUEST_FILE_CONTENT (" << client_msg.request_file_content().files_size() << " files)" << std::endl;
                     HandleRequestFileContent(client_msg, stream);
                     break;
                 case synxpo::ClientMessage::kFileWrite:
+                    std::cout << "[RECV] FILE_WRITE (" << client_msg.file_write().chunk().data().size() << " bytes)" << std::endl;
                     HandleFileWrite(client_msg.file_write());
                     break;
                 case synxpo::ClientMessage::kFileWriteEnd:
+                    std::cout << "[RECV] FILE_WRITE_END" << std::endl;
                     HandleFileWriteEnd(stream);
                     break;
                 default:
@@ -303,6 +311,7 @@ private:
             response.set_request_id(msg.request_id());
         }
         response.mutable_ok_directory_created()->set_directory_id(dir_id);
+        std::cout << "[SEND] OK_DIRECTORY_CREATED: " << dir_id << std::endl;
         stream->Write(response);
     }
 
@@ -320,8 +329,10 @@ private:
             auto* error = response.mutable_error();
             error->set_code(synxpo::Error::DIRECTORY_NOT_FOUND);
             error->set_message("Directory not found");
+            std::cout << "[SEND] ERROR: Directory not found" << std::endl;
         } else {
             response.mutable_ok_subscribed()->set_directory_id(dir_id);
+            std::cout << "[SEND] OK_SUBSCRIBED: " << dir_id << std::endl;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 subscribers_[dir_id].push_back(subscriber);
@@ -332,6 +343,7 @@ private:
         stream->Write(response);
 
         if (DirectoryExists(dir_id)) {
+            std::cout << "[SEND] CHECK_VERSION (initial state)" << std::endl;
             NotifySubscriberWithState(dir_id, subscriber);
         }
     }
@@ -350,8 +362,10 @@ private:
             auto* error = response.mutable_error();
             error->set_code(synxpo::Error::DIRECTORY_NOT_FOUND);
             error->set_message("Directory not found");
+            std::cout << "[SEND] ERROR: Directory not found" << std::endl;
         } else {
             response.mutable_ok_unsubscribed()->set_directory_id(dir_id);
+            std::cout << "[SEND] OK_UNSUBSCRIBED: " << dir_id << std::endl;
             RemoveSubscriber(dir_id, subscriber);
             auto it = std::remove(subscribed_dirs.begin(), subscribed_dirs.end(), dir_id);
             subscribed_dirs.erase(it, subscribed_dirs.end());
@@ -396,6 +410,11 @@ private:
             }
         }
 
+        std::cout << "[SEND] CHECK_VERSION (" << check->files_size() << " files)";
+        if (msg.has_request_id()) {
+            std::cout << " [request_id: " << msg.request_id() << "]";
+        }
+        std::cout << std::endl;
         stream->Write(response);
     }
 
@@ -424,6 +443,10 @@ private:
                 rec.meta.set_content_changed_version(0);
             }
 
+            // Save old path for rename detection
+            std::filesystem::path old_path = rec.path;
+            bool had_previous_path = !rec.meta.current_path().empty();
+
             rec.meta.set_current_path(file_info.current_path());
             rec.meta.set_type(file_info.type());
             rec.meta.set_deleted(file_info.deleted());
@@ -434,6 +457,21 @@ private:
             }
 
             rec.path = dir.root / rec.meta.current_path();
+            
+            // Handle file rename on disk
+            if (had_previous_path && old_path != rec.path && std::filesystem::exists(old_path)) {
+                std::error_code ec;
+                // Create parent directories for new path if needed
+                std::filesystem::create_directories(rec.path.parent_path(), ec);
+                // Rename the file
+                std::filesystem::rename(old_path, rec.path, ec);
+                if (!ec) {
+                    std::cout << "[RENAME] " << old_path.filename() << " -> " << rec.path.filename() << std::endl;
+                } else {
+                    std::cerr << "[ERROR] Failed to rename " << old_path << " to " << rec.path 
+                              << ": " << ec.message() << std::endl;
+                }
+            }
 
             if (rec.meta.deleted()) {
                 std::error_code ec;
@@ -458,12 +496,28 @@ private:
                     pending_uploads_[UploadKey(upload.directory_id, upload.file_id)] = upload;
                 }
             }
-            response.mutable_version_increase_allow();
+            
+            // Add file metadata to VERSION_INCREASE_ALLOW response
+            auto* allow = response.mutable_version_increase_allow();
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (const auto& upload : uploads) {
+                    auto dir_it = directories_.find(upload.directory_id);
+                    if (dir_it != directories_.end()) {
+                        auto file_it = dir_it->second.files.find(upload.file_id);
+                        if (file_it != dir_it->second.files.end()) {
+                            *allow->add_files() = file_it->second.meta;
+                        }
+                    }
+                }
+            }
+            std::cout << "[SEND] VERSION_INCREASE_ALLOW (" << allow->files_size() << " files)" << std::endl;
         } else {
             auto* increased = response.mutable_version_increased();
             for (const auto& meta : updated_without_upload) {
                 *increased->add_files() = meta;
             }
+            std::cout << "[SEND] VERSION_INCREASED (" << increased->files_size() << " files)" << std::endl;
         }
 
         stream->Write(response);
@@ -480,6 +534,7 @@ private:
             allow.set_request_id(msg.request_id());
         }
         allow.mutable_file_content_request_allow();
+        std::cout << "[SEND] FILE_CONTENT_REQUEST_ALLOW" << std::endl;
         stream->Write(allow);
 
         constexpr size_t kChunkSize = 1 * 1024 * 1024;
@@ -515,12 +570,14 @@ private:
                 chunk->set_id(file_id);
                 chunk->set_directory_id(dir_id);
                 chunk->set_data(buffer.data(), static_cast<size_t>(in.gcount()));
+                std::cout << "[SEND] FILE_WRITE (" << in.gcount() << " bytes)" << std::endl;
                 stream->Write(chunk_msg);
             }
         }
 
         synxpo::ServerMessage end_msg;
         end_msg.mutable_file_write_end();
+        std::cout << "[SEND] FILE_WRITE_END" << std::endl;
         stream->Write(end_msg);
     }
 
@@ -530,6 +587,8 @@ private:
 
         auto upload_opt = GetPendingUpload(key);
         if (!upload_opt) {
+            std::cerr << "[ERROR] Upload not found for key: " << key 
+                     << " (dir=" << chunk.directory_id() << ", id=" << chunk.id() << ")" << std::endl;
             return;
         }
 
@@ -540,6 +599,7 @@ private:
             if (!stream.is_open()) {
                 std::filesystem::create_directories(upload.path.parent_path());
                 stream.open(upload.path, std::ios::binary | std::ios::trunc);
+                std::cout << "[INFO] Opened file for writing: " << upload.path << std::endl;
             }
             stream.write(chunk.data().data(), static_cast<std::streamsize>(chunk.data().size()));
         }
@@ -569,6 +629,7 @@ private:
         }
 
         if (increased->files_size() > 0) {
+            std::cout << "[SEND] VERSION_INCREASED (" << increased->files_size() << " files after upload)" << std::endl;
             stream->Write(msg);
             std::set<std::string> dirs;
             for (const auto& file_meta : increased->files()) {

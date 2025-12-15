@@ -37,6 +37,8 @@ target_link_libraries(synxpo-client
         PRIVATE
         synxpo_proto
         synxpo_common
+        absl::flags
+        absl::flags_parse
         Threads::Threads
 )
 

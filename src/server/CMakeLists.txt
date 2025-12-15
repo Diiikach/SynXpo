@@ -5,6 +5,8 @@ add_executable(synxpo-server
 target_link_libraries(synxpo-server
     PRIVATE
         synxpo_proto
+        absl::flags
+        absl::flags_parse
         Threads::Threads
 )
 

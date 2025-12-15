@@ -160,6 +160,7 @@ message OkUnsubscribed {
 }
 
 message VersionIncreaseAllow {
+    repeated FileMetadata files = 1;
 }
 
 message VersionIncreaseDeny {

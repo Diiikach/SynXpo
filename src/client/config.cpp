@@ -81,7 +81,8 @@ std::optional<bool> ExtractJsonBoolField(const std::string& text, std::string_vi
 std::vector<DirectoryConfig> ParseDirectories(const std::string& text) {
     std::vector<DirectoryConfig> out;
 
-    const std::regex array_re("\\\"directories\\\"\\s*:\\s*\\[(.*)\\]", std::regex::ECMAScript | std::regex::dotall);
+    // Find directories array - use [\s\S]* instead of .* to match newlines
+    const std::regex array_re("\\\"directories\\\"\\s*:\\s*\\[([\\s\\S]*)\\]");
     std::smatch array_m;
     if (!std::regex_search(text, array_m, array_re) || array_m.size() < 2) {
         return out;
@@ -241,9 +242,23 @@ void ClientConfig::RemoveDirectory(const std::string& directory_id) {
 }
 
 void ClientConfig::UpdateDirectory(const DirectoryConfig& dir) {
+    // First try to find by directory_id if it's not empty
+    if (!dir.directory_id.empty()) {
+        auto it = std::find_if(directories_.begin(), directories_.end(),
+            [&dir](const DirectoryConfig& d) {
+                return d.directory_id == dir.directory_id;
+            });
+        
+        if (it != directories_.end()) {
+            *it = dir;
+            return;
+        }
+    }
+    
+    // Otherwise find by local_path
     auto it = std::find_if(directories_.begin(), directories_.end(),
         [&dir](const DirectoryConfig& d) {
-            return d.directory_id == dir.directory_id;
+            return d.local_path == dir.local_path;
         });
     
     if (it != directories_.end()) {
