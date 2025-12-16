@@ -1,5 +1,22 @@
 .vscode
 
 build/
-
+synxpo_storage/
 bin/
+*.log
+*.pid
+*.sqlite
+.DS_Store
+.idea/
+*.iml
+out/
+.vs/
+*.user
+*.suo
+*.exe
+*.dll
+*.obj
+*.obj
+*.lib
+*.pdb
+testdir
