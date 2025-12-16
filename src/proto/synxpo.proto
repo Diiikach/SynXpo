@@ -42,10 +42,11 @@ message FileStatusInfo {
 }
 
 message FileChunk {
-    string id = 1; // file id
+    string id = 1; // file id (may be empty for new files)
     string directory_id = 2;
     bytes data = 3;
     uint64 offset = 4;
+    string current_path = 5; // path for identification (especially for new files)
 }
 
 // ============================================================================

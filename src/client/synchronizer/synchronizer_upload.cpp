@@ -118,6 +118,8 @@ absl::Status Synchronizer::UploadFileContents(
         }
         
         std::vector<char> buffer(chunk_size);
+        uint64_t offset = 0;
+        
         while (file.read(buffer.data(), chunk_size) || file.gcount() > 0) {
             ClientMessage msg;
             auto* write = msg.mutable_file_write();
@@ -127,20 +129,44 @@ absl::Status Synchronizer::UploadFileContents(
                 chunk->set_id(*file_info.file_id);
             }
             chunk->set_directory_id(directory_id);
+            chunk->set_offset(offset);
+            chunk->set_current_path(file_info.current_path.string());
             chunk->set_data(buffer.data(), file.gcount());
             
             auto status = grpc_client_.SendMessage(msg);
             if (!status.ok()) {
                 return status;
             }
+            
+            offset += file.gcount();
         }
     }
     
-    // Send FILE_WRITE_END
+    // Send FILE_WRITE_END and wait for VERSION_INCREASED
     ClientMessage msg;
     msg.mutable_file_write_end();
     
-    return grpc_client_.SendMessage(msg);
+    auto response = grpc_client_.SendMessageWithResponse(msg);
+    if (!response.ok()) {
+        return response.status();
+    }
+    
+    if (response->has_version_increased()) {
+        // Update local metadata with server response
+        for (const auto& file_meta : response->version_increased().files()) {
+            auto status = storage_.UpsertFile(file_meta);
+            if (!status.ok()) {
+                // Log error but continue
+            }
+        }
+        return absl::OkStatus();
+    }
+    
+    if (response->has_error()) {
+        return absl::InternalError(response->error().message());
+    }
+    
+    return absl::InternalError("Unexpected response after FILE_WRITE_END");
 }
 
 absl::Status Synchronizer::HandleVersionIncreaseDeny(

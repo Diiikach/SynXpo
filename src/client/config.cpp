@@ -241,9 +241,23 @@ void ClientConfig::RemoveDirectory(const std::string& directory_id) {
 }
 
 void ClientConfig::UpdateDirectory(const DirectoryConfig& dir) {
+    // First try to find by directory_id if it's set
+    if (!dir.directory_id.empty()) {
+        auto it = std::find_if(directories_.begin(), directories_.end(),
+            [&dir](const DirectoryConfig& d) {
+                return d.directory_id == dir.directory_id;
+            });
+        
+        if (it != directories_.end()) {
+            *it = dir;
+            return;
+        }
+    }
+    
+    // Otherwise find by local_path (for newly created directories)
     auto it = std::find_if(directories_.begin(), directories_.end(),
         [&dir](const DirectoryConfig& d) {
-            return d.directory_id == dir.directory_id;
+            return d.local_path == dir.local_path;
         });
     
     if (it != directories_.end()) {

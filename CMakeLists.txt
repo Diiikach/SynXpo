@@ -64,3 +64,10 @@ add_subdirectory(src/proto)
 add_subdirectory(src/common)
 add_subdirectory(src/server)
 add_subdirectory(src/client)
+
+# Enable testing
+option(BUILD_TESTS "Build tests" ON)
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

@@ -12,7 +12,7 @@ absl::Status Synchronizer::InitializeDirectories() {
     std::set<std::string> config_dir_ids;
     absl::Status first_error = absl::OkStatus();
     
-    for (auto& dir : config_directories) {
+    for (auto dir : config_directories) {
         if (dir.directory_id.empty()) {
             // New directory - create on server
             auto status = CreateNewDirectory(dir);
@@ -20,6 +20,10 @@ absl::Status Synchronizer::InitializeDirectories() {
                 first_error.Update(status);
                 continue;
             }
+            
+            // Save the new directory_id to config
+            config_.UpdateDirectory(dir);
+            
             config_dir_ids.insert(dir.directory_id);
             storage_.RegisterDirectory(dir.directory_id, dir.local_path);
             
@@ -29,7 +33,8 @@ absl::Status Synchronizer::InitializeDirectories() {
                 continue;
             }
             
-            status = SyncDirectory(dir.directory_id);
+            // Upload initial files for new directory
+            status = UploadInitialFiles(dir);
             if (!status.ok()) {
                 first_error.Update(status);
                 continue;
@@ -79,6 +84,43 @@ absl::Status Synchronizer::CreateNewDirectory(DirectoryConfig& dir) {
 
     dir.directory_id = response->ok_directory_created().directory_id();
     return absl::OkStatus();
+}
+
+absl::Status Synchronizer::UploadInitialFiles(const DirectoryConfig& dir) {
+    namespace fs = std::filesystem;
+    
+    std::vector<FileChangeInfo> changes;
+    auto now = std::chrono::system_clock::now();
+    
+    // Scan directory for all files
+    try {
+        for (const auto& entry : fs::recursive_directory_iterator(dir.local_path)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            
+            // Get relative path
+            fs::path relative = fs::relative(entry.path(), dir.local_path);
+            
+            FileChangeInfo info;
+            info.file_id = std::nullopt;  // New file
+            info.directory_id = dir.directory_id;
+            info.current_path = relative;
+            info.deleted = false;
+            info.content_changed = true;
+            info.first_try_time = now;
+            
+            changes.push_back(info);
+        }
+    } catch (const fs::filesystem_error& e) {
+        return absl::InternalError("Failed to scan directory: " + std::string(e.what()));
+    }
+    
+    if (changes.empty()) {
+        return absl::OkStatus();  // No files to upload
+    }
+    
+    return AskVersionIncrease(dir.directory_id, changes);
 }
 
 absl::Status Synchronizer::SubscribeToDirectory(const std::string& directory_id) {

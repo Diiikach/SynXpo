@@ -1,5 +1,6 @@
 #include "synxpo/client/synchronizer.h"
 
+#include <thread>
 #include <unordered_map>
 
 namespace synxpo {
@@ -260,13 +261,42 @@ absl::Status Synchronizer::RequestFileContents(
     }
     
     if (response->has_file_content_request_allow()) {
-        // Set directory_id for HandleFileWriteEnd to use
+        // Prepare for receiving FILE_WRITE messages
         {
             std::lock_guard<std::mutex> lock(transfer_mutex_);
             download_state_.directory_id = directory_id;
+            download_state_.files = files;
+            download_state_.active = true;
+            download_state_.last_activity = std::chrono::system_clock::now();
         }
-        // Server will start sending FILE_WRITE messages
-        // They will be handled by HandleFileWrite and HandleFileWriteEnd
+        
+        // Wait for FILE_WRITE_END
+        // Note: FILE_WRITE messages are handled asynchronously by HandleFileWrite
+        // We need to wait until download_state_.active becomes false
+        auto timeout = std::chrono::seconds(60);  // 60 second timeout
+        auto start = std::chrono::steady_clock::now();
+        
+        while (true) {
+            {
+                std::lock_guard<std::mutex> lock(transfer_mutex_);
+                if (!download_state_.active) {
+                    break;
+                }
+            }
+            
+            auto elapsed = std::chrono::steady_clock::now() - start;
+            if (elapsed > timeout) {
+                std::lock_guard<std::mutex> lock(transfer_mutex_);
+                download_state_.active = false;
+                download_state_.write_streams.clear();
+                download_state_.temp_paths.clear();
+                download_state_.final_paths.clear();
+                return absl::DeadlineExceededError("Timeout waiting for file download");
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        
         return absl::OkStatus();
     }
     

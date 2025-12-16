@@ -1,0 +1,20 @@
+{
+  "server_address": "localhost:50051",
+  "storage_path": "./synxpo_storage",
+  "backup_path": "./synxpo_backup",
+  "temp_path": "./synxpo_temp",
+  "watch_debounce_ms": 500,
+  "max_file_size": 104857600,
+  "chunk_size": 1048576,
+  "max_retry_attempts": 3,
+  "retry_delay_s": 5,
+  "log_path": "~/.synxpo/client.log",
+  "log_level": "info",
+  "directories": [
+    {
+      "directory_id": "",
+      "local_path": "docs",
+      "enabled": true
+    }
+  ]
+}

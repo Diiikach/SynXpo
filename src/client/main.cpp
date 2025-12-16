@@ -277,6 +277,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cout << "✓ Auto sync started" << std::endl;
+    
+    // Save config (in case new directories were created and assigned IDs)
+    auto save_status = config.Save(config_path);
+    if (!save_status.ok()) {
+        std::cerr << "Warning: Failed to save config: " << save_status.message() << std::endl;
+    }
+    
     std::cout << std::endl;
     std::cout << "Synchronization is running. Monitoring for changes..." << std::endl;
 

@@ -68,6 +68,9 @@ private:
     // Create new directory
     absl::Status CreateNewDirectory(DirectoryConfig& dir);
     
+    // Upload initial files for new directory
+    absl::Status UploadInitialFiles(const DirectoryConfig& dir);
+    
     // Subscribe to existing directory
     absl::Status SubscribeToDirectory(const std::string& directory_id);
     
@@ -185,6 +188,7 @@ private:
         // For writing during download
         std::map<std::string, std::ofstream> write_streams;
         std::map<std::string, std::filesystem::path> temp_paths;
+        std::map<std::string, std::filesystem::path> final_paths;
         
         // For reading during upload
         std::map<std::string, std::ifstream> read_streams;

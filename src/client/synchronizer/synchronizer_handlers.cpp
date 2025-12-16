@@ -127,19 +127,25 @@ void Synchronizer::HandleFileWrite(const FileWrite& msg) {
     
     const auto& chunk = msg.chunk();
     const std::string& file_id = chunk.id();
-    const std::string& directory_id = chunk.directory_id();
+    const std::string& directory_id = chunk.directory_id().empty() 
+        ? download_state_.directory_id 
+        : chunk.directory_id();
     
     // Open stream if not already open
     if (download_state_.write_streams.find(file_id) == download_state_.write_streams.end()) {
-        auto file_meta_result = storage_.GetFileMetadata(directory_id, file_id);
-        if (!file_meta_result.ok()) {
-            // TODO: Handle error
-            return;
+        // First try to get path from chunk (preferred for new downloads)
+        std::string current_path = chunk.current_path();
+        
+        // If no path in chunk, try to get from local metadata
+        if (current_path.empty()) {
+            auto file_meta_result = storage_.GetFileMetadata(directory_id, file_id);
+            if (file_meta_result.ok()) {
+                current_path = file_meta_result->current_path();
+            }
         }
         
-        const auto& file_meta = *file_meta_result;
-        auto dir_files = storage_.ListDirectoryFiles(directory_id);
-        if (!dir_files.ok()) {
+        if (current_path.empty()) {
+            // Cannot determine file path, skip this chunk
             return;
         }
         
@@ -148,7 +154,7 @@ void Synchronizer::HandleFileWrite(const FileWrite& msg) {
             return;
         }
         
-        auto file_path = *dir_path / file_meta.current_path();
+        auto file_path = *dir_path / current_path;
         auto temp_path = file_path;
         temp_path += ".synxpo_tmp";
         
@@ -161,6 +167,7 @@ void Synchronizer::HandleFileWrite(const FileWrite& msg) {
         
         download_state_.write_streams[file_id].open(temp_path, std::ios::binary);
         download_state_.temp_paths[file_id] = temp_path;
+        download_state_.final_paths[file_id] = file_path;
         
         // Mark file as being written to ignore FileWatcher events
         {
@@ -187,14 +194,18 @@ void Synchronizer::HandleFileWriteEnd(const FileWriteEnd& msg) {
         stream.close();
         
         auto temp_it = download_state_.temp_paths.find(file_id);
-        if (temp_it != download_state_.temp_paths.end()) {
-            auto temp_path = temp_it->second;
-            auto final_path = temp_path;
-            final_path.replace_extension("");
-            final_path = final_path.parent_path() / final_path.stem();
+        auto final_it = download_state_.final_paths.find(file_id);
+        
+        if (temp_it != download_state_.temp_paths.end() && 
+            final_it != download_state_.final_paths.end()) {
+            auto& temp_path = temp_it->second;
+            auto& final_path = final_it->second;
             
-            std::filesystem::rename(temp_path, final_path);
-            written_files.push_back(final_path);
+            std::error_code ec;
+            std::filesystem::rename(temp_path, final_path, ec);
+            if (!ec) {
+                written_files.push_back(final_path);
+            }
         }
     }
     
@@ -209,6 +220,7 @@ void Synchronizer::HandleFileWriteEnd(const FileWriteEnd& msg) {
     
     download_state_.write_streams.clear();
     download_state_.temp_paths.clear();
+    download_state_.final_paths.clear();
     download_state_.active = false;
 }
 
