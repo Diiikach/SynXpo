@@ -3,6 +3,8 @@
 #include <thread>
 #include <unordered_map>
 
+#include <absl/log/log.h>
+
 namespace synxpo {
 
 absl::Status Synchronizer::RequestVersions(const std::string& directory_id) {
@@ -106,6 +108,8 @@ Synchronizer::VersionDiff Synchronizer::CalculateVersionDiff(
     // Get local files
     auto local_files_result = storage_.ListDirectoryFiles(directory_id);
     if (!local_files_result.ok()) {
+        LOG(WARNING) << "[Sync] CalculateVersionDiff: failed to list local files: " 
+                     << local_files_result.status().message();
         return diff;
     }
     
@@ -115,15 +119,27 @@ Synchronizer::VersionDiff Synchronizer::CalculateVersionDiff(
         local_map[file.id()] = file;
     }
     
+    LOG(INFO) << "[Sync] CalculateVersionDiff: " << local_files.size() << " local files, "
+              << server_files.size() << " server files";
+    
     // Compare server files with local
     for (const auto& server_file : server_files) {
         auto local_it = local_map.find(server_file.id());
         
         if (local_it == local_map.end()) {
-            // File doesn't exist locally - download it
+            // File doesn't exist locally
+            if (server_file.deleted()) {
+                // Server says file is deleted, but we don't have it locally anyway
+                // Nothing to do - don't delete local files that happen to have the same path
+                LOG(INFO) << "[Sync] Skipping deleted file not known locally: " << server_file.current_path();
+                continue;
+            }
+            // File is not deleted on server - download it
+            LOG(INFO) << "[Sync] New file to download: " << server_file.current_path();
             if (server_file.content_changed_version() > 0) {
                 diff.to_download.push_back(server_file);
             }
+            // Apply metadata (create entry for new file)
             diff.to_rename_delete.push_back(server_file);
         } else {
             const auto& local_file = local_it->second;
@@ -151,9 +167,13 @@ Synchronizer::VersionDiff Synchronizer::CalculateVersionDiff(
     
     // Remaining files in local_map don't exist on server
     for (const auto& [file_id, file_meta] : local_map) {
+        LOG(INFO) << "[Sync] Local file not on server: " << file_meta.current_path() 
+                  << " id=" << file_id << " version=" << file_meta.version();
         if (file_meta.version() > 0) {
+            LOG(INFO) << "[Sync] Will delete local file: " << file_meta.current_path();
             diff.to_delete_local.push_back(file_id);
         } else {
+            LOG(INFO) << "[Sync] Will upload new file: " << file_meta.current_path();
             diff.to_upload.push_back(file_meta);
         }
     }
@@ -255,21 +275,28 @@ absl::Status Synchronizer::RequestFileContents(
         file_id->set_directory_id(file.directory_id());
     }
 
+    // Prepare for receiving FILE_WRITE messages BEFORE sending the request
+    // to avoid race condition where FILE_WRITE arrives before we're ready
+    {
+        std::lock_guard<std::mutex> lock(transfer_mutex_);
+        download_state_.directory_id = directory_id;
+        download_state_.files = files;
+        download_state_.active = true;
+        download_state_.last_activity = std::chrono::system_clock::now();
+    }
+
     auto response = grpc_client_.SendMessageWithResponse(msg);
     if (!response.ok()) {
+        // Reset state on error
+        std::lock_guard<std::mutex> lock(transfer_mutex_);
+        download_state_.active = false;
+        download_state_.write_streams.clear();
+        download_state_.temp_paths.clear();
+        download_state_.final_paths.clear();
         return response.status();
     }
     
     if (response->has_file_content_request_allow()) {
-        // Prepare for receiving FILE_WRITE messages
-        {
-            std::lock_guard<std::mutex> lock(transfer_mutex_);
-            download_state_.directory_id = directory_id;
-            download_state_.files = files;
-            download_state_.active = true;
-            download_state_.last_activity = std::chrono::system_clock::now();
-        }
-        
         // Wait for FILE_WRITE_END
         // Note: FILE_WRITE messages are handled asynchronously by HandleFileWrite
         // We need to wait until download_state_.active becomes false
@@ -301,11 +328,22 @@ absl::Status Synchronizer::RequestFileContents(
     }
     
     if (response->has_file_content_request_deny()) {
+        // Reset state since we're not receiving files
+        {
+            std::lock_guard<std::mutex> lock(transfer_mutex_);
+            download_state_.active = false;
+        }
         // Handle denied files
         std::vector<FileStatusInfo> file_statuses(
             response->file_content_request_deny().files().begin(),
             response->file_content_request_deny().files().end());
         return HandleFileContentRequestDeny(directory_id, file_statuses);
+    }
+    
+    // Unexpected response - reset state
+    {
+        std::lock_guard<std::mutex> lock(transfer_mutex_);
+        download_state_.active = false;
     }
     
     return absl::InternalError("Unexpected response type for REQUEST_FILE_CONTENT");

@@ -308,6 +308,7 @@ void GRPCClient::ProcessMessage(const ServerMessage& message) {
             auto& waiter = *it;
             
             if (waiter->predicate(message)) {
+                LOG(INFO) << "[gRPC] ProcessMessage: " << GetServerMessageType(message) << " matched a waiter";
                 std::lock_guard<std::mutex> waiter_lock(waiter->mutex);
                 waiter->result = message;
                 waiter->done = true;
@@ -321,6 +322,7 @@ void GRPCClient::ProcessMessage(const ServerMessage& message) {
         }
     }
 
+    LOG(INFO) << "[gRPC] ProcessMessage: " << GetServerMessageType(message) << " queued for callback";
     {
         std::lock_guard<std::mutex> lock(callback_mutex_);
         callback_queue_.push(message);
@@ -329,6 +331,7 @@ void GRPCClient::ProcessMessage(const ServerMessage& message) {
 }
 
 void GRPCClient::CallbackWorkerLoop() {
+    LOG(INFO) << "[gRPC] CallbackWorkerLoop started on thread";
     while (!should_stop_) {
         std::unique_lock<std::mutex> lock(callback_mutex_);
         callback_cv_.wait(lock, [this] { 
@@ -343,10 +346,15 @@ void GRPCClient::CallbackWorkerLoop() {
         callback_queue_.pop();
         lock.unlock();
         
+        LOG(INFO) << "[gRPC] CallbackWorkerLoop invoking callback for " << GetServerMessageType(message);
+        
         if (message_callback_) {
             message_callback_(message);
         }
+        
+        LOG(INFO) << "[gRPC] CallbackWorkerLoop callback done";
     }
+    LOG(INFO) << "[gRPC] CallbackWorkerLoop exiting";
 }
 
 }  // namespace synxpo

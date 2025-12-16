@@ -1,19 +1,19 @@
 {
   "server_address": "localhost:50051",
-  "storage_path": "./testdir/.synxpo",
-  "backup_path": "./testdir/.synxpo/backup",
-  "temp_path": "./testdir/.synxpo/temp",
+  "storage_path": "./testdir/.synxpo1",
+  "backup_path": "./testdir/.synxpo1/backup",
+  "temp_path": "./testdir/.synxpo1/temp",
   "watch_debounce_ms": 500,
   "max_file_size": 104857600,
   "chunk_size": 65536,
   "max_retry_attempts": 3,
   "retry_delay_s": 5,
-  "log_path": "./testdir/.synxpo/client.log",
+  "log_path": "./testdir/.synxpo1/client.log",
   "log_level": "info",
   "directories": [
     {
       "directory_id": "49d94517-069f-41bc-8d83-cd38ce9c7c53",
-      "local_path": "./testdir/test_sync",
+      "local_path": "./testdir/test_sync1",
       "enabled": true
     }
   ]

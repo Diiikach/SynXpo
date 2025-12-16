@@ -479,14 +479,19 @@ void SyncServiceImpl::HandleRequestFileContent(
 void SyncServiceImpl::NotifyFileChanges(const std::string& dir_id,
                                          const std::string& except_client,
                                          const std::vector<FileMetadata>& files) {
+    // Send ALL files in the directory, not just changed ones
+    // This ensures clients can properly diff their local state
+    auto all_files = storage_.GetDirectoryFiles(dir_id);
+    
     ServerMessage notification;
     auto* check = notification.mutable_check_version();
-    for (const auto& file : files) {
+    for (const auto& file : all_files) {
         *check->add_files() = file;
     }
     
     LOG(INFO) << "[Server] Notifying subscribers of " << dir_id 
-              << " about " << files.size() << " file changes";
+              << " about " << files.size() << " changed files (sending all " 
+              << all_files.size() << " files)";
     subscriptions_.NotifySubscribers(dir_id, except_client, notification);
 }
 

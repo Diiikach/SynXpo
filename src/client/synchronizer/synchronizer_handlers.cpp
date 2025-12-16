@@ -1,5 +1,7 @@
 #include "synxpo/client/synchronizer.h"
 
+#include <absl/log/log.h>
+
 namespace synxpo {
 
 void Synchronizer::OnServerMessage(const ServerMessage& message) {
@@ -96,19 +98,20 @@ void Synchronizer::HandleCheckVersion(const CheckVersion& msg) {
     
     const std::string& directory_id = server_files[0].directory_id();
     
-    auto status = ProcessCheckVersion(directory_id, server_files);
-    if (!status.ok()) {
-        // TODO: Log error
-    }
+    // Process in a separate thread to avoid blocking the callback worker
+    // The callback worker needs to be free to process FILE_WRITE messages
+    std::thread([this, directory_id, server_files = std::move(server_files)]() {
+        auto status = ProcessCheckVersion(directory_id, server_files);
+        if (!status.ok()) {
+            LOG(ERROR) << "[Sync] ProcessCheckVersion failed: " << status.message();
+        }
+    }).detach();
 }
 
 void Synchronizer::HandleFileContentRequestAllow(const FileContentRequestAllow& msg) {
     // Response is now handled synchronously in RequestFileContents
-    // Just prepare for receiving FILE_WRITE messages
-    std::lock_guard<std::mutex> lock(transfer_mutex_);
-    
-    download_state_.active = true;
-    download_state_.last_activity = std::chrono::system_clock::now();
+    // download_state_.active is set before sending the request to avoid race conditions
+    // This handler is kept for compatibility but the state is already set
 }
 
 void Synchronizer::HandleFileContentRequestDeny(const FileContentRequestDeny& msg) {
@@ -120,6 +123,7 @@ void Synchronizer::HandleFileWrite(const FileWrite& msg) {
     std::lock_guard<std::mutex> lock(transfer_mutex_);
     
     if (!download_state_.active) {
+        LOG(WARNING) << "[Sync] HandleFileWrite: download_state_ not active, ignoring";
         return;
     }
     
@@ -131,32 +135,46 @@ void Synchronizer::HandleFileWrite(const FileWrite& msg) {
         ? download_state_.directory_id 
         : chunk.directory_id();
     
+    LOG(INFO) << "[Sync] HandleFileWrite: file_id=" << file_id 
+              << " directory_id=" << directory_id
+              << " offset=" << chunk.offset() 
+              << " size=" << chunk.data().size();
+    
     // Open stream if not already open
     if (download_state_.write_streams.find(file_id) == download_state_.write_streams.end()) {
         // First try to get path from chunk (preferred for new downloads)
         std::string current_path = chunk.current_path();
+        
+        LOG(INFO) << "[Sync] HandleFileWrite: current_path from chunk='" << current_path << "'";
         
         // If no path in chunk, try to get from local metadata
         if (current_path.empty()) {
             auto file_meta_result = storage_.GetFileMetadata(directory_id, file_id);
             if (file_meta_result.ok()) {
                 current_path = file_meta_result->current_path();
+                LOG(INFO) << "[Sync] HandleFileWrite: current_path from metadata='" << current_path << "'";
+            } else {
+                LOG(WARNING) << "[Sync] HandleFileWrite: failed to get metadata: " << file_meta_result.status().message();
             }
         }
         
         if (current_path.empty()) {
             // Cannot determine file path, skip this chunk
+            LOG(ERROR) << "[Sync] HandleFileWrite: cannot determine file path, skipping";
             return;
         }
         
         auto dir_path = GetDirectoryPath(directory_id);
         if (!dir_path.has_value()) {
+            LOG(ERROR) << "[Sync] HandleFileWrite: cannot get directory path for " << directory_id;
             return;
         }
         
         auto file_path = *dir_path / current_path;
         auto temp_path = file_path;
         temp_path += ".synxpo_tmp";
+        
+        LOG(INFO) << "[Sync] HandleFileWrite: writing to temp_path=" << temp_path;
         
         if (std::filesystem::exists(file_path)) {
             auto backup_status = BackupFile(file_path);
