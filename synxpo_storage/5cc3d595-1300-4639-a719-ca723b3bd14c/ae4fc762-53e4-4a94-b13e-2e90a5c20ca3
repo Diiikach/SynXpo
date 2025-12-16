@@ -1,0 +1,62 @@
+import random
+from database import Database
+
+
+def create_secret_santa_matches(db: Database):
+    """
+    Создаёт пары для Secret Santa.
+    Гарантирует, что каждый дарит и получает подарок,
+    и никто не дарит сам себе.
+    """
+    users = db.get_users_with_wishlist()
+    
+    if len(users) < 2:
+        raise ValueError("Недостаточно участников для жеребьёвки (минимум 2)")
+    
+    user_ids = [user.id for user in users]
+    
+    # Создаём список получателей
+    receivers = user_ids.copy()
+    random.shuffle(receivers)
+    
+    # Создаём пары, убеждаясь что никто не дарит сам себе
+    matches = []
+    attempts = 0
+    max_attempts = 100
+    
+    while attempts < max_attempts:
+        matches = []
+        receivers = user_ids.copy()
+        random.shuffle(receivers)
+        
+        valid = True
+        for i, giver_id in enumerate(user_ids):
+            receiver_id = receivers[i]
+            
+            # Проверяем что человек не дарит сам себе
+            if giver_id == receiver_id:
+                valid = False
+                break
+            
+            matches.append((giver_id, receiver_id))
+        
+        if valid:
+            break
+        
+        attempts += 1
+    
+    if attempts >= max_attempts:
+        # Если не получилось случайно, используем циклический сдвиг
+        matches = []
+        receivers = user_ids.copy()
+        # Сдвигаем на 1 позицию
+        receivers = receivers[1:] + receivers[:1]
+        
+        for giver_id, receiver_id in zip(user_ids, receivers):
+            matches.append((giver_id, receiver_id))
+    
+    # Сохраняем матчи в базу
+    db.create_matches(matches)
+    
+    return matches
+

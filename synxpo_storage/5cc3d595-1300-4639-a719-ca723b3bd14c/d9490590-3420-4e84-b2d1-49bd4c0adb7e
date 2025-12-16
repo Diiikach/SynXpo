@@ -1,0 +1,185 @@
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime
+import os
+
+Base = declarative_base()
+
+
+class User(Base):
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)
+    username = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    is_registered = Column(Boolean, default=False)
+    has_filled_wishlist = Column(Boolean, default=False)
+    wishlist = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Связь с жеребьёвкой
+    giver_to = relationship("Match", foreign_keys="Match.giver_id", back_populates="giver")
+    receiver_from = relationship("Match", foreign_keys="Match.receiver_id", back_populates="receiver")
+
+
+class Match(Base):
+    __tablename__ = 'matches'
+    
+    id = Column(Integer, primary_key=True)
+    giver_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    receiver_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    is_verified = Column(Boolean, default=False)
+    is_sent = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    giver = relationship("User", foreign_keys=[giver_id], back_populates="giver_to")
+    receiver = relationship("User", foreign_keys=[receiver_id], back_populates="receiver_from")
+
+
+class Database:
+    def __init__(self, db_path='secret_santa.db'):
+        db_path = os.getenv('SECRET_SANTA_DB_PATH', db_path)
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        self.engine = create_engine(f'sqlite:///{db_path}', echo=False)
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+    
+    def get_session(self):
+        return self.Session()
+    
+    def add_user(self, telegram_id, username=None, first_name=None, last_name=None):
+        session = self.get_session()
+        try:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[Database.add_user] Добавление/обновление пользователя {telegram_id}")
+            
+            user = session.query(User).filter_by(telegram_id=telegram_id).first()
+            if not user:
+                logger.info(f"[Database.add_user] Создание нового пользователя {telegram_id}")
+                user = User(
+                    telegram_id=telegram_id,
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_registered=True
+                )
+                session.add(user)
+                session.commit()
+                logger.info(f"[Database.add_user] Пользователь {telegram_id} создан с ID {user.id}")
+                return user
+            else:
+                logger.info(f"[Database.add_user] Обновление существующего пользователя {telegram_id} (ID: {user.id})")
+                user.is_registered = True
+                user.username = username or user.username
+                user.first_name = first_name or user.first_name
+                user.last_name = last_name or user.last_name
+                session.commit()
+                logger.info(f"[Database.add_user] Пользователь {telegram_id} обновлён")
+                return user
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[Database.add_user] ОШИБКА при добавлении пользователя {telegram_id}: {e}", exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def get_user(self, telegram_id):
+        session = self.get_session()
+        try:
+            return session.query(User).filter_by(telegram_id=telegram_id).first()
+        finally:
+            session.close()
+    
+    def update_wishlist(self, telegram_id, wishlist):
+        session = self.get_session()
+        try:
+            user = session.query(User).filter_by(telegram_id=telegram_id).first()
+            if user:
+                user.wishlist = wishlist
+                user.has_filled_wishlist = True
+                session.commit()
+                return True
+            return False
+        finally:
+            session.close()
+    
+    def get_all_registered_users(self):
+        session = self.get_session()
+        try:
+            return session.query(User).filter_by(is_registered=True).all()
+        finally:
+            session.close()
+    
+    def get_users_with_wishlist(self):
+        session = self.get_session()
+        try:
+            return session.query(User).filter_by(
+                is_registered=True,
+                has_filled_wishlist=True
+            ).all()
+        finally:
+            session.close()
+    
+    def create_matches(self, matches_list):
+        """Создаёт пары жеребьёвки"""
+        session = self.get_session()
+        try:
+            # Удаляем старые матчи
+            session.query(Match).delete()
+            
+            for giver_id, receiver_id in matches_list:
+                match = Match(
+                    giver_id=giver_id,
+                    receiver_id=receiver_id
+                )
+                session.add(match)
+            session.commit()
+        finally:
+            session.close()
+    
+    def get_match_for_giver(self, telegram_id):
+        """Получить кому дарит пользователь"""
+        session = self.get_session()
+        try:
+            user = session.query(User).filter_by(telegram_id=telegram_id).first()
+            if user:
+                match = session.query(Match).filter_by(giver_id=user.id).first()
+                if match:
+                    receiver = session.query(User).filter_by(id=match.receiver_id).first()
+                    return receiver
+            return None
+        finally:
+            session.close()
+    
+    def verify_matches(self):
+        """Верифицировать все матчи"""
+        session = self.get_session()
+        try:
+            matches = session.query(Match).all()
+            for match in matches:
+                match.is_verified = True
+            session.commit()
+        finally:
+            session.close()
+    
+    def mark_match_sent(self, telegram_id):
+        """Пометить что результат отправлен пользователю"""
+        session = self.get_session()
+        try:
+            user = session.query(User).filter_by(telegram_id=telegram_id).first()
+            if user:
+                match = session.query(Match).filter_by(giver_id=user.id).first()
+                if match:
+                    match.is_sent = True
+                    session.commit()
+        finally:
+            session.close()
+

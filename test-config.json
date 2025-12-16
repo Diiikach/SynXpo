@@ -12,8 +12,8 @@
   "log_level": "info",
   "directories": [
     {
-      "directory_id": "49d94517-069f-41bc-8d83-cd38ce9c7c53",
-      "local_path": "./testdir/test_sync",
+      "directory_id": "5cc3d595-1300-4639-a719-ca723b3bd14c",
+      "local_path": "/Users/dikach/5cc3d595-1300-4639-a719-ca723b3bd14c",
       "enabled": true
     }
   ]

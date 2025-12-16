@@ -7,7 +7,7 @@
 #include <absl/log/initialize.h>
 #include <grpcpp/grpcpp.h>
 
-#include "synxpo/common/in_memory_file_storage.h"
+#include "synxpo/common/sqlite_file_storage.h"
 #include "synxpo/server/service.h"
 #include "synxpo/server/storage.h"
 #include "synxpo/server/subscriptions.h"
@@ -26,7 +26,8 @@ void PrintUsage(const char* program) {
 }
 
 void RunServer(const std::string& server_address, const std::filesystem::path& storage_path) {
-    auto metadata_storage = std::make_shared<synxpo::InMemoryFileMetadataStorage>();
+    auto db_path = storage_path / "metadata.db";
+    auto metadata_storage = std::make_shared<synxpo::SqliteFileMetadataStorage>(db_path);
     synxpo::server::Storage storage(storage_path, metadata_storage);
     synxpo::server::SubscriptionManager subscriptions;
     synxpo::server::SyncServiceImpl service(storage, subscriptions);

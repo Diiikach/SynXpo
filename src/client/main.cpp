@@ -20,7 +20,7 @@
 #include "synxpo/client/grpc_client.h"
 #include "synxpo/client/synchronizer.h"
 #include "synxpo/client/file_watcher.h"
-#include "synxpo/common/in_memory_file_storage.h"
+#include "synxpo/common/sqlite_file_storage.h"
 
 namespace {
 std::atomic<bool> running{true};
@@ -132,13 +132,21 @@ int main(int argc, char** argv) {
     synxpo::ClientConfig config;
     auto load_status = config.Load(config_path);
     if (!load_status.ok()) {
-        std::cout << "Config not found, using defaults" << std::endl;
+        std::cout << "Config not found, creating default config at " << config_path << std::endl;
         config.SetServerAddress("localhost:50051");
         config.SetStoragePath("./synxpo_storage");
         config.SetBackupPath("./synxpo_backup");
         config.SetTempPath("./synxpo_temp");
         config.SetWatchDebounce(std::chrono::milliseconds(500));
         config.SetChunkSize(1024 * 1024);  // 1 MB
+        
+        // Save the default config
+        auto save_status = config.Save(config_path);
+        if (!save_status.ok()) {
+            std::cerr << "Warning: Failed to save default config: " << save_status.message() << std::endl;
+        } else {
+            std::cout << "✓ Default config saved to " << config_path << std::endl;
+        }
     }
     
     // Обрабатываем команды
@@ -262,6 +270,14 @@ int main(int argc, char** argv) {
     }
 
     // Если дошли сюда, значит команда sync или по умолчанию
+    
+    // Check if there are directories to watch
+    if (config.GetDirectories().empty()) {
+        std::cerr << "Error: No directories configured for synchronization.\n";
+        std::cerr << "Use 'dir-link <path>' to add a directory to watch, or\n";
+        std::cerr << "     'dir-pull <id>' to pull a directory from server.\n";
+        return 1;
+    }
 
     // Setup signal handlers
     std::signal(SIGINT, SignalHandler);
@@ -274,7 +290,10 @@ int main(int argc, char** argv) {
     std::cout << std::endl;
 
     // Initialize components
-    synxpo::InMemoryFileMetadataStorage storage;
+    auto storage_path = std::filesystem::path(config.GetStoragePath());
+    std::filesystem::create_directories(storage_path);
+    auto db_path = storage_path / "client_metadata.db";
+    synxpo::SqliteFileMetadataStorage storage(db_path);
     synxpo::GRPCClient grpc_client(config.GetServerAddress());
     synxpo::FileWatcher file_watcher;
     synxpo::Synchronizer synchronizer(config, storage, grpc_client, file_watcher);

@@ -1,0 +1,62 @@
+"""
+Скрипт для запуска жеребьёвки Secret Santa.
+Создаёт пары и сохраняет их в базу данных.
+"""
+import os
+import asyncio
+from dotenv import load_dotenv
+from database import Database
+from matching import create_secret_santa_matches
+
+load_dotenv()
+
+
+def main():
+    db = Database()
+    
+    # Проверяем количество участников
+    users_with_wishlist = db.get_users_with_wishlist()
+    
+    print(f"Найдено участников с заполненным вишлистом: {len(users_with_wishlist)}")
+    
+    if len(users_with_wishlist) < 2:
+        print("❌ Недостаточно участников для жеребьёвки (минимум 2)")
+        return
+    
+    print("\nУчастники:")
+    for user in users_with_wishlist:
+        print(f"  - {user.first_name} (@{user.username or 'нет username'})")
+    
+    # Подтверждение
+    confirm = input("\nЗапустить жеребьёвку? (yes/no): ")
+    if confirm.lower() != 'yes':
+        print("Жеребьёвка отменена.")
+        return
+    
+    try:
+        matches = create_secret_santa_matches(db)
+        print(f"\n✅ Жеребьёвка успешно создана! Создано {len(matches)} пар.")
+        
+        # Показываем результаты (для проверки)
+        print("\nРезультаты жеребьёвки:")
+        session = db.get_session()
+        try:
+            from database import Match, User
+            all_matches = session.query(Match).all()
+            for match in all_matches:
+                giver = session.query(User).filter_by(id=match.giver_id).first()
+                receiver = session.query(User).filter_by(id=match.receiver_id).first()
+                print(f"  {giver.first_name} → {receiver.first_name}")
+        finally:
+            session.close()
+        
+        print("\n⚠️  ВАЖНО: Результаты ещё не верифицированы и не отправлены участникам.")
+        print("Используйте verify_matches.py для верификации.")
+        
+    except Exception as e:
+        print(f"❌ Ошибка при создании жеребьёвки: {e}")
+
+
+if __name__ == '__main__':
+    main()
+

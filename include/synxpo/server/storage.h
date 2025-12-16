@@ -142,6 +142,9 @@ private:
     
     /// Delete file from disk
     void DeleteFileFromDisk(const std::string& dir_id, const std::string& file_id);
+    
+    /// Load directories and files from metadata storage (for persistence)
+    void LoadFromMetadataStorage();
 
     std::filesystem::path storage_root_;
     std::shared_ptr<IFileMetadataStorage> metadata_storage_;

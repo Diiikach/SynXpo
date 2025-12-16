@@ -17,6 +17,56 @@ Storage::Storage(const std::filesystem::path& storage_root,
     if (ec) {
         LOG(ERROR) << "[Storage] Failed to create storage root: " << ec.message();
     }
+    
+    // Load existing directories and files from metadata storage
+    LoadFromMetadataStorage();
+}
+
+void Storage::LoadFromMetadataStorage() {
+    std::unique_lock lock(mutex_);
+    
+    auto dir_ids = metadata_storage_->ListDirectories();
+    LOG(INFO) << "[Storage] Loading " << dir_ids.size() << " directories from metadata storage";
+    
+    for (const auto& dir_id : dir_ids) {
+        Directory dir;
+        dir.id = dir_id;
+        
+        // Load files for this directory
+        auto files_result = metadata_storage_->ListDirectoryFiles(dir_id);
+        if (files_result.ok()) {
+            for (const auto& file_meta : *files_result) {
+                StoredFile stored_file;
+                stored_file.id = file_meta.id();
+                stored_file.directory_id = file_meta.directory_id();
+                stored_file.version = file_meta.version();
+                stored_file.content_changed_version = file_meta.content_changed_version();
+                stored_file.type = file_meta.type();
+                stored_file.current_path = file_meta.current_path();
+                stored_file.deleted = file_meta.deleted();
+                stored_file.status = FREE;
+                
+                // Don't load content into memory - it will be read from disk on demand
+                
+                dir.files[stored_file.id] = stored_file;
+                if (!stored_file.deleted) {
+                    dir.path_to_id[stored_file.current_path] = stored_file.id;
+                }
+                
+                LOG(INFO) << "[Storage] Loaded file: " << stored_file.id 
+                          << " path=" << stored_file.current_path 
+                          << " version=" << stored_file.version
+                          << " deleted=" << stored_file.deleted;
+            }
+        } else {
+            LOG(WARNING) << "[Storage] Failed to load files for directory " << dir_id 
+                         << ": " << files_result.status().message();
+        }
+        
+        directories_[dir_id] = std::move(dir);
+        LOG(INFO) << "[Storage] Loaded directory: " << dir_id 
+                  << " with " << directories_[dir_id].files.size() << " files";
+    }
 }
 
 Storage::~Storage() = default;

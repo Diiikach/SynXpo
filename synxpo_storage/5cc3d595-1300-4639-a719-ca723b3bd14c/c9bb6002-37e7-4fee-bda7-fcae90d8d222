@@ -1,0 +1,372 @@
+import os
+import logging
+from asyncio import sleep
+from sqlalchemy.sql.dml import UpdateDMLState
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from dotenv import load_dotenv
+from database import Database
+
+load_dotenv()
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler('bot.log', encoding='utf-8'),  # Логи в файл
+        logging.StreamHandler()  # Логи в консоль
+    ]
+)
+logger = logging.getLogger(__name__)
+logger.info("=" * 50)
+logger.info("Бот запускается...")
+logger.info("=" * 50)
+
+# Инициализация базы данных
+db = Database()
+
+# Состояния для FSM
+WAITING_FOR_PASSWORD = 1
+WAITING_FOR_FIRST_NAME = 2
+WAITING_FOR_WISHLIST = 3
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start"""
+    user = update.effective_user
+    telegram_id = user.id
+    
+    db_user = db.get_user(telegram_id)
+    
+    # Если пользователь уже зарегистрирован
+    if db_user and db_user.is_registered:
+        welcome_message = (
+            f"Привет, {user.first_name}! 👋\n\n"
+            "Добро пожаловать в бота для Тайного Санты! 🎅\n\n"
+            "Вы уже зарегистрированы!\n\n"
+            "Доступные команды:\n"
+            
+            "/wish - Заполнить свой вишлист\n"
+            "/help - Показать справку"
+        )
+        await update.message.reply_text(welcome_message)
+    else:
+        # Просим ввести пароль
+        await update.message.reply_text(
+            f"Привет, {user.first_name}! 👋\n\n"
+            "Добро пожаловать в бота для Тайного Санты! 🎅\n\n"
+            "🔐 Для участия необходимо ввести пароль.\n"
+        )
+        await sleep(2)
+        await update.message.reply_text(
+            f"ps пароль есть в основном чатике 🤫"
+        )
+        context.user_data['waiting_for_password'] = True
+
+
+async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Регистрация пользователя по паролю"""
+    user = update.effective_user
+    telegram_id = user.id
+    
+    db_user = db.get_user(telegram_id)
+    
+    if db_user and db_user.is_registered:
+        await update.message.reply_text(
+            "Вы уже зарегистрированы!\n\n"
+            "Используйте /wish чтобы заполнить свой вишлист."
+        )
+    else:
+        # Просим ввести пароль
+        await update.message.reply_text(
+            "🔐 Для регистрации необходимо ввести пароль.\n"
+            "Пожалуйста, отправьте пароль, который вы получили в чате. 😉"
+        )
+        await sleep(2)
+        await update.message.reply_text(
+            f"ps пароль есть в основном чатике 🤫"
+        )
+        context.user_data['waiting_for_password'] = True
+
+
+async def wishlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать заполнение вишлиста"""
+    user = update.effective_user
+    telegram_id = user.id
+    
+    db_user = db.get_user(telegram_id)
+    
+    # Проверяем регистрацию
+    if not db_user or not db_user.is_registered:
+        await update.message.reply_text(
+            "Вы не зарегистрированы 😔\n"
+            "Используйте /start или /register для регистрации."
+        )
+        return
+    
+    if db_user.has_filled_wishlist:
+        await update.message.reply_text(
+            f"📝 Ваш текущий вишлист:\n\n{db_user.wishlist}\n\n"
+            "Отправьте новый вишлист, чтобы обновить его."
+        )
+    
+    await update.message.reply_text(
+        "📝 Пожалуйста, отправьте ваш вишлист (желаемые подарки).\n"
+        "Вы можете написать всё что угодно - список желаний, предпочтения и т.д."
+    )
+    
+    context.user_data['waiting_for_wishlist'] = True
+
+
+async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода пароля"""
+    # Проверяем состояние - если не ждём пароль, сразу выходим
+    if not context.user_data.get('waiting_for_password'):
+        logger.debug(f"[handle_password] Пропуск: waiting_for_password = False для пользователя {update.effective_user.id}")
+        return
+    
+    logger.info(f"[handle_password] Обработка пароля для пользователя {update.effective_user.id}")
+    
+    user = update.effective_user
+    telegram_id = user.id
+    entered_password = update.message.text.strip()
+    
+    # Получаем правильный пароль из переменных окружения
+    correct_password = os.getenv('REGISTRATION_PASSWORD')
+    
+    if not correct_password:
+        logger.error("REGISTRATION_PASSWORD не найден в переменных окружения!")
+        await update.message.reply_text(
+            "❌ Ошибка конфигурации бота. Обратитесь к администратору."
+        )
+        context.user_data['waiting_for_password'] = False
+        return
+    
+    # Проверяем пароль
+    if entered_password == correct_password:
+        logger.info(f"[handle_password] Пароль верный для пользователя {telegram_id}")
+        context.user_data['waiting_for_password'] = False
+        context.user_data['waiting_for_first_name'] = True
+        logger.info(f"[handle_password] Состояния обновлены: waiting_for_password=False, waiting_for_first_name=True")
+        
+        response = await update.message.reply_text(
+            "Пароль верный! 🎅🏻\n\n"
+            "Теперь введите ваше имя:"
+        )
+        logger.info(f"[handle_password] Сообщение о верном пароле отправлено. Message ID: {response.message_id}")
+    else:
+        logger.info(f"[handle_password] Неверный пароль для пользователя {telegram_id}")
+        await update.message.reply_text(
+            "Неверный пароль. Попробуйте ещё раз. 😔\n"
+            "Или используйте /start для начала заново."
+        )
+
+
+async def handle_first_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода имени"""
+    # ВАЖНО: Логируем ВСЕГДА, даже если функция не должна обрабатывать сообщение
+    user_id = update.effective_user.id
+    logger.info(f"[handle_first_name] ФУНКЦИЯ ВЫЗВАНА для пользователя {user_id}")
+    logger.info(f"[handle_first_name] Текст сообщения: '{update.message.text}'")
+    logger.info(f"[handle_first_name] Контекст: {context.user_data}")
+    
+    # Проверяем состояние - если не ждём имя, сразу выходим
+    waiting_for_first_name = context.user_data.get('waiting_for_first_name', False)
+    logger.info(f"[handle_first_name] waiting_for_first_name = {waiting_for_first_name}")
+    
+    if not waiting_for_first_name:
+        logger.info(f"[handle_first_name] ПРОПУСК: waiting_for_first_name = False для пользователя {user_id}")
+        return
+    
+    logger.info(f"[handle_first_name] ПРОДОЛЖАЕМ: Состояние подтверждено, waiting_for_first_name = {waiting_for_first_name} для пользователя {user_id}")
+    
+    try:
+        user = update.effective_user
+        telegram_id = user.id
+        first_name = update.message.text.strip()
+        
+        logger.info(f"[handle_first_name] Обработка имени для пользователя {telegram_id}: '{first_name}'")
+        
+        if not first_name or len(first_name) < 2:
+            logger.info(f"[handle_first_name] Имя слишком короткое: '{first_name}'")
+            await update.message.reply_text(
+                "Как-то коротко...🧐:"
+            )
+            return
+        
+        logger.info(f"[handle_first_name] Регистрация пользователя {telegram_id}...")
+        # Регистрируем пользователя с введённым именем
+        db_user = db.add_user(
+            telegram_id=telegram_id,
+            username=user.username,
+            first_name=first_name,
+            last_name=user.last_name  # Используем фамилию из Telegram, если есть
+        )
+
+        logger.info(f"[handle_first_name] Пользователь {telegram_id} зарегистрирован как {first_name} (ID в БД: {db_user.id})")
+        
+        context.user_data['waiting_for_first_name'] = False
+        context.user_data['waiting_for_wishlist'] = True
+        logger.info(f"[handle_first_name] Состояния обновлены: waiting_for_first_name=False, waiting_for_wishlist=True")
+        
+        logger.info(f"[handle_first_name] Отправка сообщения пользователю {telegram_id}...")
+        response = await update.message.reply_text(
+            f"Регистрация успешна, {first_name}! 🎅🏻\n\n"
+        )
+        await sleep(3)
+        await update.message.reply_text("""
+Теперь подумай над вишлистом. Что хотелось бы получить в подарок?\n
+Постарайся уложиться в примерный бюджет в 700-1500 рублей.\n
+До жеребьёвки вишлист можно будет изменить.\n Она пройдёт утром 6 декабря.\n
+Если ты не заполнишь его до указанной даты, то участвовать в конкурсе не получится, поэтому сделай это как можно быстрее 🎅🏻 \n
+До этапа необходимо подготовить подарок и после соревнования вручить его получателю. Не затягивай с подготовкой и не оставь никого без подарка. 🎅🏻
+""")
+        await sleep(3)
+        await update.message.reply_text(f"""Для создания или изменения вишлиста воспользуйся командой /wish""")
+        logger.info(f"[handle_first_name] Сообщение отправлено успешно! Message ID: {response.message_id}")
+    except Exception as e:
+        logger.error(f"[handle_first_name] ОШИБКА при обработке имени: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(
+                "Произошла ошибка при регистрации.😔 Попробуйте ещё раз или используйте /start"
+            )
+        except Exception as e2:
+            logger.error(f"[handle_first_name] Ошибка при отправке сообщения об ошибке: {e2}")
+
+
+async def handle_wishlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка вишлиста от пользователя"""
+    if not context.user_data.get('waiting_for_wishlist'):
+        logger.debug(f"handle_wishlist: waiting_for_wishlist = False для пользователя {update.effective_user.id}")
+        return
+    logger.info(f"[handle_wishlist] Обработка вишлиста для пользователя {update.effective_user.id}")
+    
+    try:
+        user = update.effective_user
+        telegram_id = user.id
+        wishlist_text = update.message.text
+        
+        logger.info(f"Обработка вишлиста для пользователя {telegram_id}")
+        
+        success = db.update_wishlist(telegram_id, wishlist_text)
+        
+        if success:
+            context.user_data['waiting_for_wishlist'] = False
+            await update.message.reply_text(
+                "Ваш вишлист успешно сохранён! 🎅🏻\n\n"
+                "Теперь ждите результатов жеребьёвки! 🎄"
+            )
+            logger.info(f"Вишлист сохранён для пользователя {telegram_id}")
+        else:
+            logger.error(f"Ошибка при сохранении вишлиста для пользователя {telegram_id}")
+            await update.message.reply_text(
+                "Ошибка при сохранении вишлиста. 😔 Попробуйте ещё раз."
+            )
+    except Exception as e:
+        logger.error(f"Ошибка при обработке вишлиста: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Произошла ошибка при сохранении вишлиста. Попробуйте ещё раз."
+        )
+
+
+async def myinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать информацию о пользователе"""
+    user = update.effective_user
+    telegram_id = user.id
+    
+    db_user = db.get_user(telegram_id)
+    
+    # Проверяем регистрацию
+    if not db_user or not db_user.is_registered:
+        await update.message.reply_text(
+            "Вы не зарегистрированы.\n"
+            "Используйте /start или /register для регистрации."
+        )
+        return
+    
+    info = f"👤 Ваша информация:\n\n"
+    info += f"Имя: {db_user.first_name or 'Не указано'}\n"
+    info += f"Username: @{db_user.username or 'Не указано'}\n"
+    info += f"Зарегистрирован: {'✅ Да' if db_user.is_registered else '❌ Нет'}\n"
+    info += f"Вишлист заполнен: {'✅ Да' if db_user.has_filled_wishlist else '❌ Нет'}\n"
+    
+    if db_user.has_filled_wishlist:
+        info += f"\n📝 Ваш вишлист:\n{db_user.wishlist}"
+    
+    await update.message.reply_text(info)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Справка по командам"""
+    help_text = (
+        "📚 Доступные команды:\n\n"
+        "/start - Начать работу с ботом\n"
+        "/register - Зарегистрироваться (требуется пароль)\n"
+        "/wish - Заполнить/отредактировать вишлист\n"
+        "/myinfo - Посмотреть свою информацию\n"
+        "/help - Показать эту справку\n\n"
+        "💡 Для регистрации нужен пароль, который вы получили в чате.\n"
+        "После заполнения вишлиста ждите результатов жеребьёвки!"
+    )
+    await update.message.reply_text(help_text)
+
+
+def main():
+    """Запуск бота"""
+    token = os.getenv('BOT_TOKEN')
+    
+    if not token:
+        logger.error("BOT_TOKEN не найден в переменных окружения!")
+        return
+    
+    application = Application.builder().token(token).build()
+    
+    # Регистрация обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("register", register))
+    application.add_handler(CommandHandler("wishlist", wishlist))
+    application.add_handler(CommandHandler("wish", wishlist))  # Алиас для wishlist
+    application.add_handler(CommandHandler("myinfo", myinfo))
+    application.add_handler(CommandHandler("help", help_command))
+    
+    # Обработчик текстовых сообщений (для пароля, имени и вишлиста)
+    # Используем один обработчик, который проверяет состояния по порядку
+    logger.info("Регистрация обработчика текстовых сообщений...")
+    
+    async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Универсальный обработчик текстовых сообщений"""
+        user_id = update.effective_user.id
+        logger.info(f"[handle_text_message] Получено текстовое сообщение от пользователя {user_id}: '{update.message.text}'")
+        logger.info(f"[handle_text_message] Контекст: {context.user_data}")
+        
+        # Проверяем состояния по порядку приоритета
+        if context.user_data.get('waiting_for_password'):
+            logger.info(f"[handle_text_message] Вызов handle_password")
+            await handle_password(update, context)
+            return
+        
+        if context.user_data.get('waiting_for_first_name'):
+            logger.info(f"[handle_text_message] Вызов handle_first_name")
+            await handle_first_name(update, context)
+            return
+        
+        if context.user_data.get('waiting_for_wishlist'):
+            logger.info(f"[handle_text_message] Вызов handle_wishlist")
+            await handle_wishlist(update, context)
+            return
+        
+        logger.debug(f"[handle_text_message] Ни одно состояние не активно, сообщение игнорируется")
+    
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)
+    )
+    logger.info("✓ Обработчик текстовых сообщений зарегистрирован")
+    
+    logger.info("Все обработчики зарегистрированы. Бот запускается...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == '__main__':
+    main()
+
