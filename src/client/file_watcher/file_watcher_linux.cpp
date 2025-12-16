@@ -1,4 +1,5 @@
 #include "synxpo/client/file_watcher.h"
+#include "synxpo/client/logger.h"
 
 #include <sys/inotify.h>
 #include <unistd.h>
@@ -64,10 +65,13 @@ private:
     void AddWatchRecursive(const std::filesystem::path& path, bool recursive) {
         uint32_t mask = IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO;
         
+        LOG_DEBUG("FileWatcher: Adding inotify watch for: " + path.string());
         int wd = inotify_add_watch(inotify_fd_, path.c_str(), mask);
         if (wd == -1) {
-            throw std::runtime_error("Failed to add watch for " + path.string() + 
-                                   ": " + std::string(std::strerror(errno)));
+            std::string error_msg = "Failed to add watch for " + path.string() + 
+                                   ": " + std::string(std::strerror(errno));
+            LOG_ERROR("FileWatcher: " + error_msg);
+            throw std::runtime_error(error_msg);
         }
 
         wd_to_path_[wd] = path;
@@ -75,34 +79,43 @@ private:
 
         if (recursive && std::filesystem::is_directory(path)) {
             try {
+                int subdir_count = 0;
                 for (const auto& entry : std::filesystem::recursive_directory_iterator(path)) {
                     if (entry.is_directory()) {
                         int sub_wd = inotify_add_watch(inotify_fd_, entry.path().c_str(), mask);
                         if (sub_wd != -1) {
                             wd_to_path_[sub_wd] = entry.path();
                             path_to_wd_[entry.path()] = sub_wd;
+                            subdir_count++;
                         }
                     }
                 }
+                if (subdir_count > 0) {
+                    LOG_DEBUG("FileWatcher: Added watches for " + std::to_string(subdir_count) + " subdirectories");
+                }
             } catch (const std::filesystem::filesystem_error& e) {
-                // Ignore permission errors
+                LOG_WARNING("FileWatcher: Error during recursive watch: " + std::string(e.what()));
             }
         }
     }
 
     void WatchThread() {
+        LOG_DEBUG("FileWatcher: Watch thread started");
         inotify_fd_ = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
         
         if (inotify_fd_ == -1) {
+            std::string error_msg = "Failed to initialize inotify: " + std::string(std::strerror(errno));
+            LOG_ERROR("FileWatcher: " + error_msg);
             {
                 std::lock_guard<std::mutex> lock(init_mutex_);
-                init_error_ = "Failed to initialize inotify: " + std::string(std::strerror(errno));
+                init_error_ = error_msg;
                 init_done_ = true;
             }
             init_cv_.notify_one();
             return;
         }
         
+        LOG_DEBUG("FileWatcher: Initializing " + std::to_string(pending_watches_.size()) + " watches");
         for (const auto& [path, recursive] : pending_watches_) {
             try {
                 AddWatchRecursive(path, recursive);
@@ -125,8 +138,10 @@ private:
         }
         init_cv_.notify_one();
         
+        LOG_INFO("FileWatcher: Watch loop starting, monitoring " + std::to_string(wd_to_path_.size()) + " paths");
         WatchLoop();
 
+        LOG_DEBUG("FileWatcher: Watch thread stopped");
         if (inotify_fd_ != -1) {
             close(inotify_fd_);
             inotify_fd_ = -1;
@@ -182,6 +197,7 @@ private:
     void ProcessEvent(struct inotify_event* event) {
         auto it = wd_to_path_.find(event->wd);
         if (it == wd_to_path_.end()) {
+            LOG_DEBUG("FileWatcher: Unknown watch descriptor: " + std::to_string(event->wd));
             return;
         }
 
@@ -193,44 +209,54 @@ private:
         file_event.path = full_path;
         file_event.entry_type = (event->mask & IN_ISDIR) ? FSEntryType::Directory : FSEntryType::File;
 
+        std::string event_type_str;
         if (event->mask & IN_CREATE) {
             file_event.type = FileEventType::Created;
+            event_type_str = "Created";
             
             if (event->mask & IN_ISDIR) {
                 try {
                     AddWatchRecursive(full_path, true);
-                } catch (...) {
-                    // Ignore errors
+                } catch (const std::exception& e) {
+                    LOG_WARNING("FileWatcher: Failed to add watch for new directory: " + std::string(e.what()));
                 }
             }
         } else if (event->mask & IN_MODIFY) {
             file_event.type = FileEventType::Modified;
+            event_type_str = "Modified";
         } else if (event->mask & IN_DELETE) {
             file_event.type = FileEventType::Deleted;
+            event_type_str = "Deleted";
         } else if (event->mask & IN_MOVED_FROM) {
             moved_from_[event->cookie] = full_path;
+            LOG_DEBUG("FileWatcher: MovedFrom detected: " + full_path.string());
             return;
         } else if (event->mask & IN_MOVED_TO) {
             auto moved_it = moved_from_.find(event->cookie);
             if (moved_it != moved_from_.end()) {
                 file_event.type = FileEventType::Renamed;
                 file_event.old_path = moved_it->second;
+                event_type_str = "Renamed";
                 moved_from_.erase(moved_it);
             } else {
                 file_event.type = FileEventType::Created;
+                event_type_str = "Created";
             }
             
             if (event->mask & IN_ISDIR) {
                 try {
                     AddWatchRecursive(full_path, true);
-                } catch (...) {
-                    // Ignore errors
+                } catch (const std::exception& e) {
+                    LOG_WARNING("FileWatcher: Failed to add watch for moved directory: " + std::string(e.what()));
                 }
             }
         } else {
             return;
         }
 
+        LOG_DEBUG("FileWatcher: Event " + event_type_str + ": " + full_path.string() + 
+                  (file_event.old_path.has_value() ? " (from: " + file_event.old_path->string() + ")" : ""));
+        
         auto& callback = GetCallback();
         if (callback) {
             callback(file_event);

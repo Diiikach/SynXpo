@@ -16,20 +16,20 @@ set(CLIENT_MAIN_SOURCES
 # Check if fswatch is available
 find_package(PkgConfig)
 
-if(PkgConfig_FOUND)
+if (PkgConfig_FOUND)
     pkg_check_modules(FSWATCH libfswatch)
-endif()
+endif ()
 
 if(FSWATCH_FOUND)
     list(APPEND CLIENT_LIB_SOURCES file_watcher/file_watcher_fswatch.cpp)
     message(STATUS "Using fswatch for file watching")
-elseif(UNIX AND NOT APPLE)
+elseif (UNIX AND NOT APPLE)
     # Fallback to Linux-specific inotify implementation
     list(APPEND CLIENT_LIB_SOURCES file_watcher/file_watcher_linux.cpp)
     message(STATUS "Using inotify for file watching")
-else()
+else ()
     message(FATAL_ERROR "Unsupported platform for FileWatcher. Please install fswatch library.")
-endif()
+endif ()
 
 # Create client library for reuse in tests
 add_library(synxpo_client ${CLIENT_LIB_SOURCES})
@@ -41,6 +41,8 @@ target_link_libraries(synxpo_client
         PUBLIC
         synxpo_proto
         synxpo_common
+        absl::flags
+        absl::flags_parse
         Threads::Threads
         absl::flags
         absl::flags_parse
@@ -72,7 +74,7 @@ target_link_libraries(synxpo-client
 if(FSWATCH_FOUND)
     target_link_libraries(synxpo-client PRIVATE ${FSWATCH_LIBRARIES})
     target_link_directories(synxpo-client PRIVATE ${FSWATCH_LIBRARY_DIRS})
-endif()
+endif ()
 
 target_include_directories(synxpo-client
         PRIVATE

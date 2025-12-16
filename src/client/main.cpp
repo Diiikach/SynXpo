@@ -17,6 +17,7 @@
 #include "synxpo/client/grpc_client.h"
 #include "synxpo/client/synchronizer.h"
 #include "synxpo/client/file_watcher.h"
+#include "synxpo/client/logger.h"
 #include "synxpo/common/in_memory_file_storage.h"
 
 namespace {
@@ -106,15 +107,18 @@ int main(int argc, char** argv) {
     
     // Загружаем конфиг
     synxpo::ClientConfig config;
+    LOG_INFO("Loading configuration from: " + config_path);
     auto load_status = config.Load(config_path);
     if (!load_status.ok()) {
-        std::cout << "Config not found, using defaults" << std::endl;
+        LOG_WARNING("Config not found, using default values: " + std::string(load_status.message()));
         config.SetServerAddress("localhost:50051");
         config.SetStoragePath("./synxpo_storage");
         config.SetBackupPath("./synxpo_backup");
         config.SetTempPath("./synxpo_temp");
         config.SetWatchDebounce(std::chrono::milliseconds(500));
         config.SetChunkSize(1024 * 1024);  // 1 MB
+    } else {
+        LOG_INFO("Configuration loaded successfully");
     }
     
     // Обрабатываем команды
@@ -184,6 +188,7 @@ int main(int argc, char** argv) {
         auto save_status = config.Save(config_path);
         if (!save_status.ok()) {
             std::cerr << "Failed to save config: " << save_status.message() << std::endl;
+            LOG_ERROR("Failed to save config: " + std::string(save_status.message()));
             return 1;
         }
         
@@ -227,6 +232,7 @@ int main(int argc, char** argv) {
         auto save_status = config.Save(config_path);
         if (!save_status.ok()) {
             std::cerr << "Failed to save config: " << save_status.message() << std::endl;
+            LOG_ERROR("Failed to save config after adding directory: " + std::string(save_status.message()));
             return 1;
         }
         std::cout << "Config updated: " << key << " = " << value << std::endl;
@@ -243,53 +249,66 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, SignalHandler);
     std::signal(SIGTERM, SignalHandler);
 
+    LOG_INFO("Starting auto sync mode");
+    LOG_INFO("Server address: " + config.GetServerAddress());
+    LOG_INFO("Number of directories to sync: " + std::to_string(config.GetDirectories().size()));
+
     std::cout << "=== SynXpo Client ===" << std::endl;
     std::cout << "Server: " << config.GetServerAddress() << std::endl;
-    std::cout << "Config: " << config_path << std::endl;
     std::cout << "Press Ctrl+C to stop" << std::endl;
     std::cout << std::endl;
 
     // Initialize components
+    LOG_INFO("Initializing components...");
     synxpo::InMemoryFileMetadataStorage storage;
     synxpo::GRPCClient grpc_client(config.GetServerAddress());
     synxpo::FileWatcher file_watcher;
     synxpo::Synchronizer synchronizer(config, storage, grpc_client, file_watcher);
+    
+    // Set config path for saving updates
+    synchronizer.SetConfigPath(config_path);
 
     // Connect to server
-    std::cout << "Connecting to server..." << std::endl;
+    LOG_INFO("Connecting to server: " + config.GetServerAddress());
     auto status = grpc_client.Connect();
     if (!status.ok()) {
         std::cerr << "Failed to connect: " << status.message() << std::endl;
+        LOG_ERROR("Connection failed: " + std::string(status.message()));
         return 1;
     }
-    std::cout << "✓ Connected" << std::endl;
+    LOG_INFO("Successfully connected to server");
 
     // Start receiving messages
     grpc_client.StartReceiving();
-    std::cout << "✓ Started receiving messages" << std::endl;
+    LOG_INFO("Started receiving messages from server");
 
     // Start auto sync
-    std::cout << "Starting auto sync..." << std::endl;
+    LOG_INFO("Starting auto sync...");
     status = synchronizer.StartAutoSync();
     if (!status.ok()) {
         std::cerr << "Failed to start auto sync: " << status.message() << std::endl;
+        LOG_ERROR("Failed to start auto sync: " + std::string(status.message()));
         grpc_client.Disconnect();
         return 1;
     }
-    std::cout << "✓ Auto sync started" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Synchronization is running. Monitoring for changes..." << std::endl;
+    
+    std::cout << "Synchronization running. Monitoring for changes..." << std::endl;
+    LOG_INFO("Auto sync started successfully. Monitoring for changes...");
 
     // Main loop - just wait for signal
+    LOG_DEBUG("Entering main loop");
     while (running.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     // Cleanup
     std::cout << "\nShutting down..." << std::endl;
+    LOG_INFO("Shutting down client...");
     synchronizer.StopAutoSync();
+    LOG_INFO("Auto sync stopped");
     grpc_client.Disconnect();
-    std::cout << "✓ Stopped" << std::endl;
+    LOG_INFO("Disconnected from server");
+    LOG_INFO("=== SynXpo Client stopped ===");
 
     return 0;
 }

@@ -19,6 +19,8 @@ target_include_directories(synxpo_proto
 )
 
 # Generate protobuf and gRPC files
+include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
+
 protobuf_generate(
     TARGET synxpo_proto
     LANGUAGE cpp

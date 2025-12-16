@@ -1,4 +1,5 @@
 #include "synxpo/client/synchronizer.h"
+#include "synxpo/client/logger.h"
 
 #include <algorithm>
 
@@ -21,6 +22,10 @@ Synchronizer::~Synchronizer() {
     }
 }
 
+void Synchronizer::SetConfigPath(const std::filesystem::path& config_path) {
+    config_path_ = config_path;
+}
+
 absl::Status Synchronizer::StartAutoSync() {
     if (auto_sync_running_) {
         return absl::AlreadyExistsError("Auto sync is already running");
@@ -31,8 +36,27 @@ absl::Status Synchronizer::StartAutoSync() {
         return status;
     }
 
+    // Setup file watcher for all directories
     file_watcher_.SetEventCallback(
         [this](const FileEvent& event) { OnFileEvent(event); });
+    
+    for (const auto& dir : config_.GetDirectories()) {
+        try {
+            LOG_INFO("Adding watch for directory: " + dir.local_path.string());
+            file_watcher_.AddWatch(dir.local_path, true);
+        } catch (const std::exception& e) {
+            LOG_ERROR("Failed to add watch for " + dir.local_path.string() + ": " + e.what());
+            return absl::InternalError("Failed to add watch: " + std::string(e.what()));
+        }
+    }
+    
+    try {
+        file_watcher_.Start();
+        LOG_INFO("FileWatcher started");
+    } catch (const std::exception& e) {
+        LOG_ERROR("Failed to start file watcher: " + std::string(e.what()));
+        return absl::InternalError("Failed to start file watcher: " + std::string(e.what()));
+    }
     
     grpc_client_.SetMessageCallback(
         [this](const ServerMessage& message) { OnServerMessage(message); });
@@ -40,6 +64,7 @@ absl::Status Synchronizer::StartAutoSync() {
     debounce_thread_running_.store(true);
     debounce_thread_ = std::thread([this]() {
         auto debounce_duration = config_.GetWatchDebounce();
+        LOG_INFO("Debounce thread started with duration: " + std::to_string(debounce_duration.count()) + "ms");
         
         while (debounce_thread_running_.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -55,6 +80,7 @@ absl::Status Synchronizer::StartAutoSync() {
                             now - dir_state.last_change_time);
                         
                         if (time_since_change >= debounce_duration) {
+                            LOG_DEBUG("Debounce timeout reached for " + dir_id + " (" + std::to_string(time_since_change.count()) + "ms)");
                             directories_to_process.push_back(dir_id);
                         }
                     }
@@ -65,6 +91,8 @@ absl::Status Synchronizer::StartAutoSync() {
                 ProcessPendingChanges(dir_id);
             }
         }
+        
+        LOG_INFO("Debounce thread stopped");
     });
 
     auto_sync_running_ = true;
@@ -83,6 +111,7 @@ void Synchronizer::StopAutoSync() {
         debounce_thread_.join();
     }
 
+    file_watcher_.Stop();
     file_watcher_.SetEventCallback(nullptr);
     grpc_client_.SetMessageCallback(nullptr);
 }
@@ -146,6 +175,16 @@ Synchronizer::FileChangeInfo Synchronizer::EventToChangeInfo(const FileEvent& ev
     
     info.directory_id = *dir_id;
     
+    // Get directory path to calculate relative path
+    auto dir_path = GetDirectoryPath(*dir_id);
+    if (dir_path.has_value()) {
+        // Store relative path from directory root
+        info.current_path = std::filesystem::relative(event.path, *dir_path);
+    } else {
+        // Fallback to full path if directory not found
+        info.current_path = event.path;
+    }
+    
     // Try to get file_id from storage if file exists
     auto file_meta_result = storage_.GetFileMetadata(*dir_id, event.path);
     if (file_meta_result.ok()) {
@@ -154,7 +193,6 @@ Synchronizer::FileChangeInfo Synchronizer::EventToChangeInfo(const FileEvent& ev
         info.file_id = std::nullopt;  // New file
     }
     
-    info.current_path = event.path;
     info.deleted = (event.type == FileEventType::Deleted);
     info.content_changed = (event.type == FileEventType::Modified || 
                            event.type == FileEventType::Created);
