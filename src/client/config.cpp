@@ -81,8 +81,7 @@ std::optional<bool> ExtractJsonBoolField(const std::string& text, std::string_vi
 std::vector<DirectoryConfig> ParseDirectories(const std::string& text) {
     std::vector<DirectoryConfig> out;
 
-    // Find directories array - use [\s\S]* instead of .* to match newlines
-    const std::regex array_re("\\\"directories\\\"\\s*:\\s*\\[([\\s\\S]*)\\]");
+    const std::regex array_re("\\\"directories\\\"\\s*:\\s*\\[([\\s\\S]*)\\]", std::regex::ECMAScript);
     std::smatch array_m;
     if (!std::regex_search(text, array_m, array_re) || array_m.size() < 2) {
         return out;
