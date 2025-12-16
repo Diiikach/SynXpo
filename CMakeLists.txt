@@ -65,9 +65,23 @@ add_subdirectory(src/common)
 add_subdirectory(src/server)
 add_subdirectory(src/client)
 
-# Enable testing
+# Testing
 option(BUILD_TESTS "Build tests" ON)
 if(BUILD_TESTS)
     enable_testing()
+
+    # Fetch GoogleTest once for all test directories
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest
+        GIT_TAG        v1.14.0
+        GIT_SHALLOW    TRUE
+        EXCLUDE_FROM_ALL
+    )
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    set(INSTALL_GMOCK OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
     add_subdirectory(tests)
 endif()

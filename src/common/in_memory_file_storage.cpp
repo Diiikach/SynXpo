@@ -80,8 +80,8 @@ std::optional<std::string> InMemoryFileMetadataStorage::GetDirectoryIdByPath(
 }
 
 absl::StatusOr<FileMetadata> InMemoryFileMetadataStorage::GetFileMetadata(
-    const std::string& file_id,
-    const std::string& directory_id) const {
+    const std::string& directory_id,
+    const std::string& file_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     
     auto dir_it = directories_.find(directory_id);
@@ -98,8 +98,8 @@ absl::StatusOr<FileMetadata> InMemoryFileMetadataStorage::GetFileMetadata(
 }
 
 absl::StatusOr<FileMetadata> InMemoryFileMetadataStorage::GetFileMetadata(
-    const std::filesystem::path& path,
-    const std::string& directory_id) const {
+    const std::string& directory_id,
+    const std::filesystem::path& path) const {
     std::lock_guard<std::mutex> lock(mutex_);
     
     auto dir_it = directories_.find(directory_id);
@@ -154,8 +154,8 @@ absl::Status InMemoryFileMetadataStorage::UpsertFile(const FileMetadata& metadat
 }
 
 absl::Status InMemoryFileMetadataStorage::RemoveFile(
-    const std::string& file_id,
-    const std::string& directory_id) {
+    const std::string& directory_id,
+    const std::string& file_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     auto dir_it = directories_.find(directory_id);

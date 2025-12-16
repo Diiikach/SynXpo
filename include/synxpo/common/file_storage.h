@@ -32,21 +32,21 @@ public:
     
     // Get file metadata by id
     virtual absl::StatusOr<FileMetadata> GetFileMetadata(
-        const std::string& file_id,
-        const std::string& directory_id) const = 0;
+        const std::string& directory_id,
+        const std::string& file_id) const = 0;
 
     // Get file metadata by path
     virtual absl::StatusOr<FileMetadata> GetFileMetadata(
-        const std::filesystem::path& path,
-        const std::string& directory_id) const = 0;
+        const std::string& directory_id,
+        const std::filesystem::path& path) const = 0;
 
     // Update file metadata
     virtual absl::Status UpsertFile(const FileMetadata& metadata) = 0;
 
     // Remove file
     virtual absl::Status RemoveFile(
-        const std::string& file_id, 
-        const std::string& directory_id) = 0;
+        const std::string& directory_id,
+        const std::string& file_id) = 0;
 };
 
 }  // namespace synxpo

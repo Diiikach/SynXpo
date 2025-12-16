@@ -1,19 +1,4 @@
-# Find Google Test
-find_package(GTest)
-
-if(NOT GTest_FOUND)
-    # If not found, fetch it
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.14.0
-    )
-    # Disable installation of gtest/gmock
-    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-    set(INSTALL_GMOCK OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-endif()
+# GoogleTest is fetched at the top-level CMakeLists.txt
 
 # Create test executable for server
 add_executable(test_server
@@ -116,3 +101,18 @@ target_include_directories(test_integration
 )
 
 add_test(NAME integration_tests COMMAND test_integration)
+
+# SQLite file storage tests
+add_executable(test_sqlite_storage
+    sqlite_file_storage_test.cpp
+)
+
+target_link_libraries(test_sqlite_storage
+    PRIVATE
+        synxpo_common
+        GTest::gtest_main
+        GTest::gmock
+)
+
+include(GoogleTest)
+gtest_discover_tests(test_sqlite_storage)
