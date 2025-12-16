@@ -6,10 +6,16 @@ add_library(synxpo_server_lib STATIC
     service.cpp
 )
 
+# Find absl
+find_package(absl REQUIRED)
+
 target_link_libraries(synxpo_server_lib
     PUBLIC
         synxpo_proto
+        synxpo_common
         Threads::Threads
+        absl::log
+        absl::log_initialize
 )
 
 target_include_directories(synxpo_server_lib

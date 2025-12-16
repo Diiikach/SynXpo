@@ -31,8 +31,17 @@ absl::Status Synchronizer::StartAutoSync() {
         return status;
     }
 
+    // Set up file watcher for all directories
     file_watcher_.SetEventCallback(
         [this](const FileEvent& event) { OnFileEvent(event); });
+    
+    for (const auto& dir : config_.GetDirectories()) {
+        if (dir.enabled && !dir.local_path.empty()) {
+            file_watcher_.AddWatch(dir.local_path, true);
+        }
+    }
+    
+    file_watcher_.Start();
     
     grpc_client_.SetMessageCallback(
         [this](const ServerMessage& message) { OnServerMessage(message); });
@@ -83,6 +92,7 @@ void Synchronizer::StopAutoSync() {
         debounce_thread_.join();
     }
 
+    file_watcher_.Stop();
     file_watcher_.SetEventCallback(nullptr);
     grpc_client_.SetMessageCallback(nullptr);
 }
@@ -146,15 +156,23 @@ Synchronizer::FileChangeInfo Synchronizer::EventToChangeInfo(const FileEvent& ev
     
     info.directory_id = *dir_id;
     
+    // Get the directory's local path to compute relative path
+    auto dir_path = GetDirectoryPath(*dir_id);
+    if (!dir_path.has_value()) {
+        return info;  // Should not happen
+    }
+    
+    // Convert absolute path to relative path
+    info.current_path = std::filesystem::relative(event.path, *dir_path);
+    
     // Try to get file_id from storage if file exists
-    auto file_meta_result = storage_.GetFileMetadata(*dir_id, event.path);
+    auto file_meta_result = storage_.GetFileMetadata(info.current_path, *dir_id);
     if (file_meta_result.ok()) {
         info.file_id = file_meta_result->id();
     } else {
         info.file_id = std::nullopt;  // New file
     }
     
-    info.current_path = event.path;
     info.deleted = (event.type == FileEventType::Deleted);
     info.content_changed = (event.type == FileEventType::Modified || 
                            event.type == FileEventType::Created);

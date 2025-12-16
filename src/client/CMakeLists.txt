@@ -45,6 +45,8 @@ target_link_libraries(synxpo_client
         absl::flags
         absl::flags_parse
         absl::flags_usage
+        absl::log
+        absl::log_initialize
 )
 
 if(FSWATCH_FOUND)

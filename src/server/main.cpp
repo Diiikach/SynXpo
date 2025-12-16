@@ -1,27 +1,33 @@
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
 
+#include <absl/log/globals.h>
+#include <absl/log/initialize.h>
 #include <grpcpp/grpcpp.h>
 
+#include "synxpo/common/in_memory_file_storage.h"
 #include "synxpo/server/service.h"
 #include "synxpo/server/storage.h"
 #include "synxpo/server/subscriptions.h"
 
 void PrintUsage(const char* program) {
-    std::cout << "Usage: " << program << " [address]\n"
+    std::cout << "Usage: " << program << " [address] [storage_path]\n"
               << "\n"
               << "Arguments:\n"
-              << "  address    Server address (default: 0.0.0.0:50051)\n"
+              << "  address       Server address (default: 0.0.0.0:50051)\n"
+              << "  storage_path  Path to store files (default: ./synxpo_storage)\n"
               << "\n"
               << "Examples:\n"
               << "  " << program << "\n"
               << "  " << program << " localhost:50051\n"
-              << "  " << program << " 0.0.0.0:8080\n";
+              << "  " << program << " 0.0.0.0:8080 /var/synxpo\n";
 }
 
-void RunServer(const std::string& server_address) {
-    synxpo::server::Storage storage;
+void RunServer(const std::string& server_address, const std::filesystem::path& storage_path) {
+    auto metadata_storage = std::make_shared<synxpo::InMemoryFileMetadataStorage>();
+    synxpo::server::Storage storage(storage_path, metadata_storage);
     synxpo::server::SubscriptionManager subscriptions;
     synxpo::server::SyncServiceImpl service(storage, subscriptions);
 
@@ -43,6 +49,7 @@ void RunServer(const std::string& server_address) {
     std::cout << "==================================================" << std::endl;
     std::cout << "SynXpo Server v1.0" << std::endl;
     std::cout << "Listening on " << server_address << std::endl;
+    std::cout << "Storage path: " << storage_path << std::endl;
     std::cout << "==================================================" << std::endl;
     std::cout << "\nPress Ctrl+C to stop the server.\n" << std::endl;
 
@@ -50,15 +57,26 @@ void RunServer(const std::string& server_address) {
 }
 
 int main(int argc, char** argv) {
-    std::string server_address = "0.0.0.0:50051";
+    // Initialize absl logging
+    absl::InitializeLog();
+    absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfo);
     
+    std::string server_address = "0.0.0.0:50051";
+    std::filesystem::path storage_path = "./synxpo_storage";
+    
+    int positional_arg = 0;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
             PrintUsage(argv[0]);
             return 0;
         } else if (arg[0] != '-') {
-            server_address = arg;
+            if (positional_arg == 0) {
+                server_address = arg;
+            } else if (positional_arg == 1) {
+                storage_path = arg;
+            }
+            positional_arg++;
         } else {
             std::cerr << "Unknown option: " << arg << std::endl;
             PrintUsage(argv[0]);
@@ -66,6 +84,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    RunServer(server_address);
+    RunServer(server_address, storage_path);
     return 0;
 }

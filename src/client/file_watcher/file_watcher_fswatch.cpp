@@ -14,6 +14,8 @@
 #include <thread>
 #include <vector>
 
+#include <absl/log/log.h>
+
 namespace synxpo {
 
 class FswatchFileWatcherImpl : public FileWatcher::Impl {
@@ -234,6 +236,31 @@ private:
             bool deleted = false;
             bool renamed = false;
 
+            // Log all flags for debugging
+            std::string flags_str;
+            for (const auto& flag : flags) {
+                if (!flags_str.empty()) flags_str += ", ";
+                switch (flag) {
+                    case fsw_event_flag::NoOp: flags_str += "NoOp"; break;
+                    case fsw_event_flag::PlatformSpecific: flags_str += "PlatformSpecific"; break;
+                    case fsw_event_flag::Created: flags_str += "Created"; break;
+                    case fsw_event_flag::Updated: flags_str += "Updated"; break;
+                    case fsw_event_flag::Removed: flags_str += "Removed"; break;
+                    case fsw_event_flag::Renamed: flags_str += "Renamed"; break;
+                    case fsw_event_flag::OwnerModified: flags_str += "OwnerModified"; break;
+                    case fsw_event_flag::AttributeModified: flags_str += "AttributeModified"; break;
+                    case fsw_event_flag::MovedFrom: flags_str += "MovedFrom"; break;
+                    case fsw_event_flag::MovedTo: flags_str += "MovedTo"; break;
+                    case fsw_event_flag::IsFile: flags_str += "IsFile"; break;
+                    case fsw_event_flag::IsDir: flags_str += "IsDir"; break;
+                    case fsw_event_flag::IsSymLink: flags_str += "IsSymLink"; break;
+                    case fsw_event_flag::Link: flags_str += "Link"; break;
+                    case fsw_event_flag::Overflow: flags_str += "Overflow"; break;
+                    default: flags_str += "Unknown"; break;
+                }
+            }
+            LOG(INFO) << "[FileWatcher] fswatch event: path=" << file_event.path << " flags=[" << flags_str << "]";
+
                 for (const auto& flag : flags) {
                     switch (flag) {
                         case fsw_event_flag::Created:
@@ -257,14 +284,17 @@ private:
             }
 
             // Determine event type (priority: deleted > renamed > created > modified)
+            std::string event_type_str;
             if (deleted) {
                 file_event.type = FileEventType::Deleted;
+                event_type_str = "Deleted";
 
                 // Clean up cached type after deletion
                 std::lock_guard<std::mutex> lock(path_types_mutex_);
                 path_types_.erase(file_event.path);
             } else if (renamed) {
                 file_event.type = FileEventType::Renamed;
+                event_type_str = "Renamed";
 
                 // Note: fswatch doesn't provide old path directly
                 // Try to match with MovedFrom event using path similarity
@@ -286,8 +316,24 @@ private:
                     auto now = std::chrono::system_clock::now();
                     pending_renames_by_name_[file_event.path.filename().string()].push_back({file_event.path, now});
                     pending_renames_global_[file_event.path] = now;
-                    PrunePendingRenames(now);
-                    continue; // Don't emit event yet
+                    
+                    // Prune old pending renames and collect expired paths
+                    std::vector<std::filesystem::path> expired_paths;
+                    PrunePendingRenames(now, expired_paths);
+                    
+                    // Emit deletion events for expired MovedFrom (file moved out of watched folder)
+                    for (const auto& expired_path : expired_paths) {
+                        FileEvent delete_event;
+                        delete_event.timestamp = now;
+                        delete_event.path = expired_path;
+                        delete_event.type = FileEventType::Deleted;
+                        delete_event.entry_type = FSEntryType::Unknown;
+                        
+                        LOG(INFO) << "[FileWatcher] Emitting deletion for orphaned MovedFrom: " << expired_path;
+                        callback(delete_event);
+                    }
+                    
+                    continue; // Don't emit event yet for current MovedFrom
                 } else if (is_moved_to) {
                     // Try to find matching MovedFrom
                     auto now = std::chrono::system_clock::now();
@@ -344,14 +390,38 @@ private:
                 if (file_event.entry_type == FSEntryType::Directory) {
                     AddDirectoryWatch(file_event.path);
                 }
+                event_type_str = "Created";
             } else if (modified) {
                 file_event.type = FileEventType::Modified;
+                event_type_str = "Modified";
             } else {
                 // Unknown event, skip
+                LOG(INFO) << "[FileWatcher] Skipping unknown event for: " << file_event.path;
                 continue;
             }
 
+            LOG(INFO) << "[FileWatcher] Emitting event: path=" << file_event.path << " type=" << event_type_str;
             callback(file_event);
+        }
+        
+        // After processing all events, check for any remaining expired MovedFrom events
+        // This handles the case where a file is moved out and no other events follow
+        {
+            std::lock_guard<std::mutex> lock(rename_mutex_);
+            auto now = std::chrono::system_clock::now();
+            std::vector<std::filesystem::path> expired_paths;
+            PrunePendingRenames(now, expired_paths);
+            
+            for (const auto& expired_path : expired_paths) {
+                FileEvent delete_event;
+                delete_event.timestamp = now;
+                delete_event.path = expired_path;
+                delete_event.type = FileEventType::Deleted;
+                delete_event.entry_type = FSEntryType::Unknown;
+                
+                LOG(INFO) << "[FileWatcher] Emitting deletion for orphaned MovedFrom (end of batch): " << expired_path;
+                callback(delete_event);
+            }
         }
     }
 
@@ -393,10 +463,12 @@ private:
         }
     }
 
-    void PrunePendingRenames(const std::chrono::system_clock::time_point& now) {
+    void PrunePendingRenames(const std::chrono::system_clock::time_point& now,
+                             std::vector<std::filesystem::path>& expired_paths) {
         constexpr auto kWindowSeconds = 1;
         for (auto it = pending_renames_global_.begin(); it != pending_renames_global_.end(); ) {
             if (std::chrono::duration_cast<std::chrono::seconds>(now - it->second).count() > kWindowSeconds) {
+                expired_paths.push_back(it->first);
                 it = pending_renames_global_.erase(it);
             } else {
                 ++it;
@@ -407,6 +479,7 @@ private:
             auto& vec = name_it->second;
             for (auto it = vec.begin(); it != vec.end(); ) {
                 if (std::chrono::duration_cast<std::chrono::seconds>(now - it->second).count() > kWindowSeconds) {
+                    // Note: path already added via pending_renames_global_
                     it = vec.erase(it);
                 } else {
                     ++it;

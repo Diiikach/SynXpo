@@ -4,7 +4,41 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
+
+#include <absl/log/log.h>
+#include <absl/log/vlog_is_on.h>
 #include <absl/strings/str_cat.h>
+
+namespace {
+// Helper to get message type name for logging
+std::string GetClientMessageType(const synxpo::ClientMessage& msg) {
+    if (msg.has_directory_create()) return "DIRECTORY_CREATE";
+    if (msg.has_directory_subscribe()) return "DIRECTORY_SUBSCRIBE";
+    if (msg.has_directory_unsubscribe()) return "DIRECTORY_UNSUBSCRIBE";
+    if (msg.has_request_version()) return "REQUEST_VERSION";
+    if (msg.has_ask_version_increase()) return "ASK_VERSION_INCREASE";
+    if (msg.has_file_write()) return "FILE_WRITE";
+    if (msg.has_file_write_end()) return "FILE_WRITE_END";
+    if (msg.has_request_file_content()) return "REQUEST_FILE_CONTENT";
+    return "UNKNOWN";
+}
+
+std::string GetServerMessageType(const synxpo::ServerMessage& msg) {
+    if (msg.has_ok_directory_created()) return "OK_DIRECTORY_CREATED";
+    if (msg.has_ok_subscribed()) return "OK_SUBSCRIBED";
+    if (msg.has_ok_unsubscribed()) return "OK_UNSUBSCRIBED";
+    if (msg.has_check_version()) return "CHECK_VERSION";
+    if (msg.has_version_increase_allow()) return "VERSION_INCREASE_ALLOW";
+    if (msg.has_version_increase_deny()) return "VERSION_INCREASE_DENY";
+    if (msg.has_version_increased()) return "VERSION_INCREASED";
+    if (msg.has_file_content_request_allow()) return "FILE_CONTENT_REQUEST_ALLOW";
+    if (msg.has_file_content_request_deny()) return "FILE_CONTENT_REQUEST_DENY";
+    if (msg.has_file_write()) return "FILE_WRITE";
+    if (msg.has_file_write_end()) return "FILE_WRITE_END";
+    if (msg.has_error()) return "ERROR";
+    return "UNKNOWN";
+}
+}  // namespace
 
 namespace synxpo {
 
@@ -113,7 +147,14 @@ absl::Status GRPCClient::SendMessage(const ClientMessage& message) {
 
     std::lock_guard<std::mutex> lock(stream_mutex_);
     
+    LOG(INFO) << "[gRPC] --> " << GetClientMessageType(message);
+    if (message.has_request_id()) {
+        LOG(INFO) << "[gRPC]     request_id=" << message.request_id();
+    }
+    VLOG(1) << "[gRPC] --> Content:\n" << message.DebugString();
+    
     if (!stream_->Write(message)) {
+        LOG(WARNING) << "[gRPC] Failed to write message";
         return absl::UnavailableError("Failed to write message to stream");
     }
 
@@ -242,9 +283,18 @@ void GRPCClient::ReceiveLoop() {
         ServerMessage message;
         
         if (stream_->Read(&message)) {
+            LOG(INFO) << "[gRPC] <-- " << GetServerMessageType(message);
+            if (message.has_request_id()) {
+                LOG(INFO) << "[gRPC]     request_id=" << message.request_id();
+            }
+            if (message.has_error()) {
+                LOG(WARNING) << "[gRPC]     error: " << message.error().message();
+            }
+            VLOG(1) << "[gRPC] <-- Content:\n" << message.DebugString();
             ProcessMessage(message);
         } else {
             // Stream closed or error
+            LOG(INFO) << "[gRPC] Stream closed";
             break;
         }
     }

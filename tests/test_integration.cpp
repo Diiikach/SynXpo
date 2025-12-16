@@ -11,6 +11,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include "synxpo.grpc.pb.h"
+#include "synxpo/common/in_memory_file_storage.h"
 #include "synxpo/server/service.h"
 #include "synxpo/server/storage.h"
 #include "synxpo/server/subscriptions.h"
@@ -28,10 +29,12 @@ protected:
         test_dir_ = fs::temp_directory_path() / "synxpo_integration_test";
         client1_dir_ = test_dir_ / "client1";
         client2_dir_ = test_dir_ / "client2";
+        storage_dir_ = test_dir_ / "server_storage";
         
         fs::remove_all(test_dir_);
         fs::create_directories(client1_dir_);
         fs::create_directories(client2_dir_);
+        fs::create_directories(storage_dir_);
         
         // Start embedded server
         StartServer();
@@ -43,7 +46,8 @@ protected:
     }
     
     void StartServer() {
-        storage_ = std::make_unique<server::Storage>();
+        metadata_storage_ = std::make_shared<InMemoryFileMetadataStorage>();
+        storage_ = std::make_unique<server::Storage>(storage_dir_, metadata_storage_);
         subscriptions_ = std::make_unique<server::SubscriptionManager>();
         service_ = std::make_unique<server::SyncServiceImpl>(*storage_, *subscriptions_);
         
@@ -237,6 +241,7 @@ protected:
 
 protected:
     std::string server_address_ = "localhost:50052";
+    std::shared_ptr<InMemoryFileMetadataStorage> metadata_storage_;
     std::unique_ptr<server::Storage> storage_;
     std::unique_ptr<server::SubscriptionManager> subscriptions_;
     std::unique_ptr<server::SyncServiceImpl> service_;
@@ -246,6 +251,7 @@ protected:
     fs::path test_dir_;
     fs::path client1_dir_;
     fs::path client2_dir_;
+    fs::path storage_dir_;
 };
 
 // ============================================================================

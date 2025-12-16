@@ -1,18 +1,114 @@
 #include "synxpo/server/storage.h"
 #include "synxpo/server/uuid.h"
 
-#include <iostream>
+#include <fstream>
+
+#include <absl/log/log.h>
 
 namespace synxpo::server {
 
-Storage::Storage() = default;
+Storage::Storage(const std::filesystem::path& storage_root,
+                 std::shared_ptr<IFileMetadataStorage> metadata_storage)
+    : storage_root_(storage_root)
+    , metadata_storage_(std::move(metadata_storage)) {
+    // Create storage root if it doesn't exist
+    std::error_code ec;
+    std::filesystem::create_directories(storage_root_, ec);
+    if (ec) {
+        LOG(ERROR) << "[Storage] Failed to create storage root: " << ec.message();
+    }
+}
+
 Storage::~Storage() = default;
+
+std::filesystem::path Storage::GetFileDiskPath(const std::string& dir_id,
+                                                const std::string& file_id) const {
+    return storage_root_ / dir_id / file_id;
+}
+
+std::vector<uint8_t> Storage::ReadFileContent(const std::string& dir_id,
+                                               const std::string& file_id) const {
+    auto path = GetFileDiskPath(dir_id, file_id);
+    
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        LOG(ERROR) << "[Storage] Failed to read file: " << path;
+        return {};
+    }
+    
+    file.seekg(0, std::ios::end);
+    size_t size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    
+    std::vector<uint8_t> content(size);
+    file.read(reinterpret_cast<char*>(content.data()), size);
+    
+    return content;
+}
+
+void Storage::WriteFileContent(const std::string& dir_id,
+                                const std::string& file_id,
+                                const std::vector<uint8_t>& content) {
+    auto dir_path = storage_root_ / dir_id;
+    
+    std::error_code ec;
+    std::filesystem::create_directories(dir_path, ec);
+    if (ec) {
+        LOG(ERROR) << "[Storage] Failed to create directory: " << ec.message();
+        return;
+    }
+    
+    auto path = GetFileDiskPath(dir_id, file_id);
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        LOG(ERROR) << "[Storage] Failed to write file: " << path;
+        return;
+    }
+    
+    file.write(reinterpret_cast<const char*>(content.data()), content.size());
+    LOG(INFO) << "[Storage] Written file to disk: " << path << " size=" << content.size();
+}
+
+void Storage::DeleteFileFromDisk(const std::string& dir_id, const std::string& file_id) {
+    auto path = GetFileDiskPath(dir_id, file_id);
+    
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    if (ec) {
+        LOG(ERROR) << "[Storage] Failed to delete file: " << path << " error: " << ec.message();
+    } else {
+        LOG(INFO) << "[Storage] Deleted file from disk: " << path;
+    }
+}
 
 std::string Storage::CreateDirectory() {
     std::unique_lock lock(mutex_);
     std::string dir_id = GenerateUuid();
+    
     directories_[dir_id] = Directory{.id = dir_id};
-    std::cout << "[Storage] Created directory: " << dir_id << std::endl;
+    
+    // Create directory on disk
+    auto dir_path = storage_root_ / dir_id;
+    std::error_code ec;
+    std::filesystem::create_directories(dir_path, ec);
+    
+    // Register in metadata storage
+    metadata_storage_->RegisterDirectory(dir_id, dir_path);
+    
+    LOG(INFO) << "[Storage] Created directory: " << dir_id;
+    return dir_id;
+}
+
+std::string Storage::RegisterDirectory(const std::filesystem::path& dir_path) {
+    std::unique_lock lock(mutex_);
+    std::string dir_id = GenerateUuid();
+    
+    directories_[dir_id] = Directory{.id = dir_id};
+    
+    // Register in metadata storage with the actual path
+    metadata_storage_->RegisterDirectory(dir_id, dir_path);
+    
+    LOG(INFO) << "[Storage] Registered directory: " << dir_id << " at " << dir_path;
     return dir_id;
 }
 
@@ -61,7 +157,13 @@ std::optional<StoredFile> Storage::GetFile(const std::string& dir_id,
         return std::nullopt;
     }
     
-    return file_it->second;
+    // Read content from disk if needed
+    StoredFile file = file_it->second;
+    if (!file.deleted && file.content.empty()) {
+        file.content = ReadFileContent(dir_id, file_id);
+    }
+    
+    return file;
 }
 
 std::optional<StoredFile> Storage::GetFileByPath(const std::string& dir_id,
@@ -83,7 +185,13 @@ std::optional<StoredFile> Storage::GetFileByPath(const std::string& dir_id,
         return std::nullopt;
     }
     
-    return file_it->second;
+    // Read content from disk if needed
+    StoredFile file = file_it->second;
+    if (!file.deleted && file.content.empty()) {
+        file.content = ReadFileContent(dir_id, file_it->first);
+    }
+    
+    return file;
 }
 
 std::vector<VersionCheckResult> Storage::CheckVersionIncrease(
@@ -102,8 +210,8 @@ std::vector<VersionCheckResult> Storage::CheckVersionIncrease(
             // Directory doesn't exist
             result.status = DENIED;
             results.push_back(result);
-            std::cout << "[Storage] CheckVersionIncrease: directory not found: " 
-                      << file_info.directory_id() << std::endl;
+            LOG(WARNING) << "[Storage] CheckVersionIncrease: directory not found: " 
+                      << file_info.directory_id();
             continue;
         }
         
@@ -144,8 +252,7 @@ std::vector<VersionCheckResult> Storage::CheckVersionIncrease(
             if (last_try.time > first_try_time) {
                 // Another client started first
                 result.status = DENIED;
-                std::cout << "[Storage] CheckVersionIncrease: DENIED (last_try.time > first_try_time)" 
-                          << std::endl;
+                LOG(INFO) << "[Storage] CheckVersionIncrease: DENIED (last_try.time > first_try_time)";
             } else if (last_try.time < first_try_time ||
                        (last_try.time == first_try_time && last_try.connection_id == client_id)) {
                 // We have priority or it's a retry
@@ -154,11 +261,11 @@ std::vector<VersionCheckResult> Storage::CheckVersionIncrease(
                 if (existing_file->status == BLOCKED && 
                     existing_file->locked_by_client != client_id) {
                     result.status = BLOCKED;
-                    std::cout << "[Storage] CheckVersionIncrease: BLOCKED by " 
-                              << existing_file->locked_by_client << std::endl;
+                    LOG(INFO) << "[Storage] CheckVersionIncrease: BLOCKED by " 
+                              << existing_file->locked_by_client;
                 } else if (existing_file->is_being_read) {
                     result.status = BLOCKED;
-                    std::cout << "[Storage] CheckVersionIncrease: BLOCKED (being read)" << std::endl;
+                    LOG(INFO) << "[Storage] CheckVersionIncrease: BLOCKED (being read)";
                 } else {
                     result.status = FREE;
                     // Update LAST_TRY
@@ -168,14 +275,13 @@ std::vector<VersionCheckResult> Storage::CheckVersionIncrease(
             } else {
                 // LAST_TRY.time == FIRST_TRY_TIME but different connection
                 result.status = DENIED;
-                std::cout << "[Storage] CheckVersionIncrease: DENIED (same time, different client)"
-                          << std::endl;
+                LOG(INFO) << "[Storage] CheckVersionIncrease: DENIED (same time, different client)";
             }
         } else {
             // New file - always allowed
             result.status = FREE;
             result.file_id = "";  // Will be assigned when created
-            std::cout << "[Storage] CheckVersionIncrease: new file, FREE" << std::endl;
+            LOG(INFO) << "[Storage] CheckVersionIncrease: new file, FREE";
         }
         
         results.push_back(result);
@@ -215,7 +321,7 @@ void Storage::LockFilesForWrite(const std::string& client_id,
             file->status = BLOCKED;
             file->locked_by_client = client_id;
             file->lock_time = now;
-            std::cout << "[Storage] Locked file for write: " << file->id << std::endl;
+            LOG(INFO) << "[Storage] Locked file for write: " << file->id;
         }
     }
 }
@@ -231,7 +337,7 @@ std::vector<FileMetadata> Storage::ApplyVersionIncrease(
     for (const auto& file_info : request.files()) {
         auto dir_it = directories_.find(file_info.directory_id());
         if (dir_it == directories_.end()) {
-            std::cerr << "[Storage] ApplyVersionIncrease: directory not found" << std::endl;
+            LOG(ERROR) << "[Storage] ApplyVersionIncrease: directory not found";
             continue;
         }
         
@@ -268,17 +374,29 @@ std::vector<FileMetadata> Storage::ApplyVersionIncrease(
                     content_it = file_contents.find(file_info.current_path());
                 }
                 if (content_it != file_contents.end()) {
+                    // Write content to disk
+                    WriteFileContent(file_info.directory_id(), existing_file->id, content_it->second);
+                    // Keep content in memory for immediate access
                     existing_file->content = content_it->second;
-                    std::cout << "[Storage] Updated file content: " << existing_file->id
-                              << " size=" << existing_file->content.size() << std::endl;
+                    LOG(INFO) << "[Storage] Updated file content: " << existing_file->id
+                              << " size=" << existing_file->content.size();
                 }
             }
             
             existing_file->current_path = file_info.current_path();
-            existing_file->deleted = file_info.deleted();
             existing_file->type = file_info.type();
             existing_file->status = FREE;
             existing_file->locked_by_client.clear();
+            
+            // Handle deletion
+            LOG(INFO) << "[Storage] file_info.deleted()=" << file_info.deleted() 
+                      << " existing_file->deleted=" << existing_file->deleted;
+            if (file_info.deleted() && !existing_file->deleted) {
+                existing_file->deleted = true;
+                // Delete file from disk
+                DeleteFileFromDisk(file_info.directory_id(), existing_file->id);
+            }
+            existing_file->deleted = file_info.deleted();
             
             // Update path index if path changed
             if (old_path != file_info.current_path()) {
@@ -290,7 +408,7 @@ std::vector<FileMetadata> Storage::ApplyVersionIncrease(
                 dir_it->second.path_to_id.erase(file_info.current_path());
             }
             
-            // Build metadata response
+            // Update metadata storage
             FileMetadata meta;
             meta.set_id(existing_file->id);
             meta.set_directory_id(existing_file->directory_id);
@@ -299,13 +417,14 @@ std::vector<FileMetadata> Storage::ApplyVersionIncrease(
             meta.set_type(existing_file->type);
             meta.set_current_path(existing_file->current_path);
             meta.set_deleted(existing_file->deleted);
+            
+            metadata_storage_->UpsertFile(meta);
             updated_files.push_back(meta);
             
-            std::cout << "[Storage] Updated file: " << existing_file->id 
+            LOG(INFO) << "[Storage] Updated file: " << existing_file->id 
                       << " path=" << existing_file->current_path 
                       << " version=" << existing_file->version 
-                      << " content_changed_version=" << existing_file->content_changed_version
-                      << std::endl;
+                      << " content_changed_version=" << existing_file->content_changed_version;
         } else {
             // Create new file
             StoredFile new_file;
@@ -325,9 +444,10 @@ std::vector<FileMetadata> Storage::ApplyVersionIncrease(
             if (file_info.content_changed()) {
                 auto content_it = file_contents.find(file_info.current_path());
                 if (content_it != file_contents.end()) {
+                    // Write content to disk
+                    WriteFileContent(file_info.directory_id(), new_file.id, content_it->second);
                     new_file.content = content_it->second;
-                    std::cout << "[Storage] New file content size=" << new_file.content.size() 
-                              << std::endl;
+                    LOG(INFO) << "[Storage] New file content size=" << new_file.content.size();
                 }
             }
             
@@ -336,6 +456,7 @@ std::vector<FileMetadata> Storage::ApplyVersionIncrease(
                 dir_it->second.path_to_id[new_file.current_path] = new_file.id;
             }
             
+            // Update metadata storage
             FileMetadata meta;
             meta.set_id(new_file.id);
             meta.set_directory_id(new_file.directory_id);
@@ -344,11 +465,13 @@ std::vector<FileMetadata> Storage::ApplyVersionIncrease(
             meta.set_type(new_file.type);
             meta.set_current_path(new_file.current_path);
             meta.set_deleted(new_file.deleted);
+            
+            metadata_storage_->UpsertFile(meta);
             updated_files.push_back(meta);
             
-            std::cout << "[Storage] Created file: " << new_file.id 
+            LOG(INFO) << "[Storage] Created file: " << new_file.id 
                       << " path=" << new_file.current_path 
-                      << " version=" << new_file.version << std::endl;
+                      << " version=" << new_file.version;
         }
     }
     
@@ -371,7 +494,7 @@ void Storage::RollbackUpload(const std::string& client_id,
                 auto file_it = dir_it->second.files.find(file_id);
                 if (file_it != dir_it->second.files.end()) {
                     file_it->second = backup;
-                    std::cout << "[Storage] Rolled back file: " << file_id << std::endl;
+                    LOG(INFO) << "[Storage] Rolled back file: " << file_id;
                 }
             }
         }
@@ -394,7 +517,7 @@ void Storage::RollbackUpload(const std::string& client_id,
         if (file && file->locked_by_client == client_id) {
             file->status = FREE;
             file->locked_by_client.clear();
-            std::cout << "[Storage] Unlocked file after rollback: " << file->id << std::endl;
+            LOG(INFO) << "[Storage] Unlocked file after rollback: " << file->id;
         }
     }
 }
@@ -476,7 +599,7 @@ void Storage::ReleaseLocks(const std::string& client_id) {
             if (file.locked_by_client == client_id) {
                 file.status = FREE;
                 file.locked_by_client.clear();
-                std::cout << "[Storage] Released lock on file: " << file_id << std::endl;
+                LOG(INFO) << "[Storage] Released lock on file: " << file_id;
             }
         }
     }
@@ -497,8 +620,8 @@ void Storage::CheckStaleLocks(std::chrono::seconds write_timeout) {
                     now - file.lock_time);
                 
                 if (elapsed > write_timeout) {
-                    std::cout << "[Storage] Releasing stale lock on file: " << file_id 
-                              << " (held by " << file.locked_by_client << ")" << std::endl;
+                    LOG(INFO) << "[Storage] Releasing stale lock on file: " << file_id 
+                              << " (held by " << file.locked_by_client << ")";
                     file.status = FREE;
                     file.locked_by_client.clear();
                 }

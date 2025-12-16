@@ -12,6 +12,9 @@
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/flags/usage.h"
+#include "absl/log/globals.h"
+#include "absl/log/initialize.h"
+#include "absl/log/log.h"
 
 #include "synxpo/client/config.h"
 #include "synxpo/client/grpc_client.h"
@@ -23,7 +26,7 @@ namespace {
 std::atomic<bool> running{true};
 
 void SignalHandler(int signal) {
-    std::cout << "\nReceived signal " << signal << ", shutting down..." << std::endl;
+    LOG(INFO) << "Received signal " << signal << ", shutting down...";
     running.store(false);
 }
 
@@ -52,8 +55,13 @@ std::string ExpandPath(const std::string& path) {
 ABSL_FLAG(std::string, config, "~/.config/synxpo/config.json", "Путь к файлу конфигурации");
 ABSL_FLAG(std::string, path, "", "Путь для команды dir-pull");
 ABSL_FLAG(std::string, name, "", "Имя директории для синхронизации");
+ABSL_FLAG(int, v, 0, "Log verbosity level (0=INFO, 1=DEBUG)");
+ABSL_FLAG(bool, verbose, false, "Enable verbose debug logging");
 
 int main(int argc, char** argv) {
+    // Initialize absl logging
+    absl::InitializeLog();
+    
     absl::SetProgramUsageMessage(
         "SynXpo — синхронизация директорий.\n\n"
         "Использование:\n"
@@ -86,12 +94,28 @@ int main(int argc, char** argv) {
     );
     std::vector<char*> args = absl::ParseCommandLine(argc, argv);
     
+    // Set log level based on verbose flag (after parsing)
+    int verbosity = absl::GetFlag(FLAGS_v);
+    if (absl::GetFlag(FLAGS_verbose)) {
+        verbosity = std::max(verbosity, 1);
+    }
+    
+    if (verbosity > 0) {
+        absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfo);
+        absl::SetGlobalVLogLevel(verbosity);
+    } else {
+        absl::SetStderrThreshold(absl::LogSeverityAtLeast::kWarning);
+    }
+    
     std::string config_path = ExpandPath(absl::GetFlag(FLAGS_config));
     std::string target_path = ExpandPath(absl::GetFlag(FLAGS_path));
     std::string dir_name = absl::GetFlag(FLAGS_name);
     
     // Создаем директорию для конфига, если она не существует
-    std::filesystem::create_directories(std::filesystem::path(config_path).parent_path());
+    auto config_parent = std::filesystem::path(config_path).parent_path();
+    if (!config_parent.empty()) {
+        std::filesystem::create_directories(config_parent);
+    }
     
     // Получаем команду из позиционных аргументов
     std::string command = "sync";  // по умолчанию

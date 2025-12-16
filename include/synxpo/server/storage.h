@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -10,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "synxpo/common/file_storage.h"
 #include "synxpo.pb.h"
 
 namespace synxpo::server {
@@ -56,13 +58,19 @@ struct VersionCheckResult {
 };
 
 /// Thread-safe storage for server data
+/// Stores file content on disk, metadata via IFileMetadataStorage
 class Storage {
 public:
-    Storage();
+    /// Create storage with given base directory for files and metadata storage
+    Storage(const std::filesystem::path& storage_root,
+            std::shared_ptr<IFileMetadataStorage> metadata_storage);
     ~Storage();
     
     /// Create a new directory, returns its ID
     std::string CreateDirectory();
+    
+    /// Register existing directory by path, returns its ID
+    std::string RegisterDirectory(const std::filesystem::path& dir_path);
     
     /// Check if a directory exists
     bool DirectoryExists(const std::string& dir_id) const;
@@ -119,6 +127,25 @@ public:
     void CheckStaleLocks(std::chrono::seconds write_timeout);
 
 private:
+    /// Get the disk path for a file
+    std::filesystem::path GetFileDiskPath(const std::string& dir_id, 
+                                           const std::string& file_id) const;
+    
+    /// Read file content from disk
+    std::vector<uint8_t> ReadFileContent(const std::string& dir_id,
+                                          const std::string& file_id) const;
+    
+    /// Write file content to disk
+    void WriteFileContent(const std::string& dir_id,
+                          const std::string& file_id,
+                          const std::vector<uint8_t>& content);
+    
+    /// Delete file from disk
+    void DeleteFileFromDisk(const std::string& dir_id, const std::string& file_id);
+
+    std::filesystem::path storage_root_;
+    std::shared_ptr<IFileMetadataStorage> metadata_storage_;
+    
     mutable std::shared_mutex mutex_;
     std::map<std::string, Directory> directories_;
     

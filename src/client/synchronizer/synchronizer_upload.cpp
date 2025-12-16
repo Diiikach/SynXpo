@@ -2,11 +2,17 @@
 
 #include <fstream>
 
+#include <absl/log/log.h>
+
 namespace synxpo {
 
 void Synchronizer::OnFileEvent(const FileEvent& event) {
+    LOG(INFO) << "[Client] OnFileEvent: path=" << event.path 
+              << " type=" << static_cast<int>(event.type);
+    
     auto dir_id_opt = storage_.GetDirectoryIdByPath(event.path);
     if (!dir_id_opt.has_value()) {
+        LOG(WARNING) << "[Client] OnFileEvent: no directory for path " << event.path;
         return;
     }
 
@@ -17,10 +23,13 @@ void Synchronizer::OnFileEvent(const FileEvent& event) {
     
     // Ignore events for files we're currently writing (prevents sync loops)
     if (dir_state.files_being_written.count(event.path) > 0) {
+        LOG(INFO) << "[Client] OnFileEvent: ignoring (file being written)";
         return;
     }
     
     auto change_info = EventToChangeInfo(event);
+    LOG(INFO) << "[Client] OnFileEvent: change_info.deleted=" << change_info.deleted 
+              << " content_changed=" << change_info.content_changed;
     dir_state.pending_changes[event.path] = change_info;
     dir_state.last_change_time = std::chrono::system_clock::now();
 }
@@ -32,6 +41,7 @@ absl::Status Synchronizer::AskVersionIncrease(
     ClientMessage msg;
     auto* ask = msg.mutable_ask_version_increase();
 
+    LOG(INFO) << "[Sync] AskVersionIncrease for " << changes.size() << " files:";
     for (const auto& change : changes) {
         auto* file_info = ask->add_files();
         
@@ -42,6 +52,11 @@ absl::Status Synchronizer::AskVersionIncrease(
         file_info->set_current_path(change.current_path.string());
         file_info->set_deleted(change.deleted);
         file_info->set_content_changed(change.content_changed);
+        
+        LOG(INFO) << "[Sync]   - path=" << change.current_path 
+                  << " deleted=" << change.deleted 
+                  << " content_changed=" << change.content_changed
+                  << " file_id=" << (change.file_id.has_value() ? *change.file_id : "(new)");
         
         auto* timestamp = file_info->mutable_first_try_time();
         auto time_since_epoch = change.first_try_time.time_since_epoch();

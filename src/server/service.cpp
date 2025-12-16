@@ -1,7 +1,7 @@
 #include "synxpo/server/service.h"
 #include "synxpo/server/uuid.h"
 
-#include <iostream>
+#include <absl/log/log.h>
 
 namespace synxpo::server {
 
@@ -19,7 +19,7 @@ grpc::Status SyncServiceImpl::Stream(
     grpc::ServerReaderWriter<ServerMessage, ClientMessage>* stream) {
     
     std::string client_id = GenerateUuid();
-    std::cout << "\n[Server] Client connected: " << client_id << std::endl;
+    LOG(INFO) << "\n[Server] Client connected: " << client_id;
     
     ClientMessage client_msg;
     std::optional<PendingUpload> pending_upload;
@@ -36,7 +36,7 @@ grpc::Status SyncServiceImpl::Stream(
                 : config_.first_write_timeout;
             
             if (elapsed > timeout) {
-                std::cout << "[Server] Upload timeout for client " << client_id << std::endl;
+                LOG(INFO) << "[Server] Upload timeout for client " << client_id;
                 storage_.RollbackUpload(client_id, pending_upload->request);
                 pending_upload.reset();
                 
@@ -67,12 +67,12 @@ grpc::Status SyncServiceImpl::Stream(
         } else if (client_msg.has_request_file_content()) {
             HandleRequestFileContent(client_id, client_msg, stream);
         } else {
-            std::cout << "[Server] Unknown message type from " << client_id << std::endl;
+            LOG(INFO) << "[Server] Unknown message type from " << client_id;
         }
     }
     
     // Client disconnected
-    std::cout << "\n[Server] Client disconnected: " << client_id << std::endl;
+    LOG(INFO) << "\n[Server] Client disconnected: " << client_id;
     
     // Clean up any pending upload
     if (pending_upload.has_value()) {
@@ -90,7 +90,7 @@ void SyncServiceImpl::HandleDirectoryCreate(
     const ClientMessage& msg,
     grpc::ServerReaderWriter<ServerMessage, ClientMessage>* stream) {
     
-    std::cout << "[Server] DirectoryCreate from " << client_id << std::endl;
+    LOG(INFO) << "[Server] DirectoryCreate from " << client_id;
     
     std::string dir_id = storage_.CreateDirectory();
     
@@ -108,8 +108,8 @@ void SyncServiceImpl::HandleDirectorySubscribe(
     grpc::ServerReaderWriter<ServerMessage, ClientMessage>* stream) {
     
     const auto& subscribe = msg.directory_subscribe();
-    std::cout << "[Server] DirectorySubscribe: " << subscribe.directory_id() 
-              << " from " << client_id << std::endl;
+    LOG(INFO) << "[Server] DirectorySubscribe: " << subscribe.directory_id() 
+              << " from " << client_id;
     
     ServerMessage response;
     if (msg.has_request_id()) {
@@ -135,8 +135,8 @@ void SyncServiceImpl::HandleDirectoryUnsubscribe(
     grpc::ServerReaderWriter<ServerMessage, ClientMessage>* stream) {
     
     const auto& unsubscribe = msg.directory_unsubscribe();
-    std::cout << "[Server] DirectoryUnsubscribe: " << unsubscribe.directory_id() 
-              << " from " << client_id << std::endl;
+    LOG(INFO) << "[Server] DirectoryUnsubscribe: " << unsubscribe.directory_id() 
+              << " from " << client_id;
     
     subscriptions_.Unsubscribe(client_id, unsubscribe.directory_id());
     
@@ -154,8 +154,8 @@ void SyncServiceImpl::HandleRequestVersion(
     grpc::ServerReaderWriter<ServerMessage, ClientMessage>* stream) {
     
     const auto& req = msg.request_version();
-    std::cout << "[Server] RequestVersion from " << client_id 
-              << " with " << req.requests_size() << " requests" << std::endl;
+    LOG(INFO) << "[Server] RequestVersion from " << client_id 
+              << " with " << req.requests_size() << " requests";
     
     ServerMessage response;
     if (msg.has_request_id()) {
@@ -171,8 +171,8 @@ void SyncServiceImpl::HandleRequestVersion(
             for (const auto& file : files) {
                 *check->add_files() = file;
             }
-            std::cout << "[Server] Added " << files.size() 
-                      << " files from directory " << file_req.directory_id() << std::endl;
+            LOG(INFO) << "[Server] Added " << files.size() 
+                      << " files from directory " << file_req.directory_id();
         } else if (file_req.has_file_id()) {
             // Get specific file
             auto file = storage_.GetFile(
@@ -191,8 +191,8 @@ void SyncServiceImpl::HandleRequestVersion(
         }
     }
     
-    std::cout << "[Server] Sending CheckVersion with " << check->files_size() 
-              << " files" << std::endl;
+    LOG(INFO) << "[Server] Sending CheckVersion with " << check->files_size() 
+              << " files";
     stream->Write(response);
 }
 
@@ -203,8 +203,8 @@ void SyncServiceImpl::HandleAskVersionIncrease(
     std::optional<PendingUpload>& pending_upload) {
     
     const auto& ask = msg.ask_version_increase();
-    std::cout << "[Server] AskVersionIncrease from " << client_id 
-              << " with " << ask.files_size() << " files" << std::endl;
+    LOG(INFO) << "[Server] AskVersionIncrease from " << client_id 
+              << " with " << ask.files_size() << " files";
     
     ServerMessage response;
     if (msg.has_request_id()) {
@@ -236,7 +236,7 @@ void SyncServiceImpl::HandleAskVersionIncrease(
             *deny->add_files() = status_info;
         }
         stream->Write(response);
-        std::cout << "[Server] Sent VersionIncreaseDeny" << std::endl;
+        LOG(INFO) << "[Server] Sent VersionIncreaseDeny";
         return;
     }
     
@@ -260,7 +260,7 @@ void SyncServiceImpl::HandleAskVersionIncrease(
         
         response.mutable_version_increase_allow();
         stream->Write(response);
-        std::cout << "[Server] Sent VersionIncreaseAllow, waiting for content" << std::endl;
+        LOG(INFO) << "[Server] Sent VersionIncreaseAllow, waiting for content";
     } else {
         // No content needed - apply changes immediately
         // Lock, apply, and release in one operation
@@ -272,7 +272,7 @@ void SyncServiceImpl::HandleAskVersionIncrease(
             *increased->add_files() = file;
         }
         stream->Write(response);
-        std::cout << "[Server] Sent VersionIncreased (no content change)" << std::endl;
+        LOG(INFO) << "[Server] Sent VersionIncreased (no content change)";
         
         // Notify other subscribers
         if (!updated.empty()) {
@@ -290,7 +290,7 @@ void SyncServiceImpl::HandleFileWrite(
     const auto& chunk = write.chunk();
     
     if (!pending_upload.has_value()) {
-        std::cerr << "[Server] FileWrite without pending upload from " << client_id << std::endl;
+        LOG(ERROR) << "[Server] FileWrite without pending upload from " << client_id;
         return;
     }
     
@@ -318,7 +318,7 @@ void SyncServiceImpl::HandleFileWrite(
     }
     
     if (file_key.empty()) {
-        std::cerr << "[Server] Could not determine file for chunk" << std::endl;
+        LOG(ERROR) << "[Server] Could not determine file for chunk";
         return;
     }
     
@@ -332,10 +332,10 @@ void SyncServiceImpl::HandleFileWrite(
     }
     std::copy(data.begin(), data.end(), content.begin() + chunk.offset());
     
-    std::cout << "[Server] Received FileWrite chunk: offset=" << chunk.offset()
+    LOG(INFO) << "[Server] Received FileWrite chunk: offset=" << chunk.offset()
               << " size=" << data.size() 
               << " total=" << content.size()
-              << " for " << file_key << std::endl;
+              << " for " << file_key;
 }
 
 void SyncServiceImpl::HandleFileWriteEnd(
@@ -344,10 +344,10 @@ void SyncServiceImpl::HandleFileWriteEnd(
     grpc::ServerReaderWriter<ServerMessage, ClientMessage>* stream,
     std::optional<PendingUpload>& pending_upload) {
     
-    std::cout << "[Server] FileWriteEnd from " << client_id << std::endl;
+    LOG(INFO) << "[Server] FileWriteEnd from " << client_id;
     
     if (!pending_upload.has_value()) {
-        std::cerr << "[Server] FileWriteEnd without pending upload!" << std::endl;
+        LOG(ERROR) << "[Server] FileWriteEnd without pending upload!";
         return;
     }
     
@@ -368,7 +368,7 @@ void SyncServiceImpl::HandleFileWriteEnd(
     }
     stream->Write(response);
     
-    std::cout << "[Server] Sent VersionIncreased with " << updated.size() << " files" << std::endl;
+    LOG(INFO) << "[Server] Sent VersionIncreased with " << updated.size() << " files";
     
     // Notify other subscribers
     if (!updated.empty()) {
@@ -384,8 +384,8 @@ void SyncServiceImpl::HandleRequestFileContent(
     grpc::ServerReaderWriter<ServerMessage, ClientMessage>* stream) {
     
     const auto& req = msg.request_file_content();
-    std::cout << "[Server] RequestFileContent from " << client_id 
-              << " for " << req.files_size() << " files" << std::endl;
+    LOG(INFO) << "[Server] RequestFileContent from " << client_id 
+              << " for " << req.files_size() << " files";
     
     ServerMessage response;
     if (msg.has_request_id()) {
@@ -415,7 +415,7 @@ void SyncServiceImpl::HandleRequestFileContent(
             *deny->add_files() = status_info;
         }
         stream->Write(response);
-        std::cout << "[Server] Sent FileContentRequestDeny" << std::endl;
+        LOG(INFO) << "[Server] Sent FileContentRequestDeny";
         return;
     }
     
@@ -425,21 +425,21 @@ void SyncServiceImpl::HandleRequestFileContent(
     // Send allow
     response.mutable_file_content_request_allow();
     stream->Write(response);
-    std::cout << "[Server] Sent FileContentRequestAllow" << std::endl;
+    LOG(INFO) << "[Server] Sent FileContentRequestAllow";
     
     // Send file contents
     for (const auto& file_id : req.files()) {
         auto file = storage_.GetFile(file_id.directory_id(), file_id.id());
         if (!file.has_value()) {
-            std::cerr << "[Server] File not found: " << file_id.id() << std::endl;
+            LOG(ERROR) << "[Server] File not found: " << file_id.id();
             continue;
         }
         
         const auto& content = file->content;
         const size_t chunk_size = config_.max_chunk_size;
         
-        std::cout << "[Server] Sending file " << file->current_path 
-                  << " size=" << content.size() << std::endl;
+        LOG(INFO) << "[Server] Sending file " << file->current_path 
+                  << " size=" << content.size();
         
         // Send content in chunks
         for (size_t offset = 0; offset < content.size() || (offset == 0 && content.empty()); ) {
@@ -458,8 +458,8 @@ void SyncServiceImpl::HandleRequestFileContent(
             }
             
             stream->Write(write_msg);
-            std::cout << "[Server] Sent chunk: offset=" << offset 
-                      << " size=" << (end - offset) << std::endl;
+            LOG(INFO) << "[Server] Sent chunk: offset=" << offset 
+                      << " size=" << (end - offset);
             
             offset = end;
             if (content.empty()) break;
@@ -470,7 +470,7 @@ void SyncServiceImpl::HandleRequestFileContent(
     ServerMessage end_msg;
     end_msg.mutable_file_write_end();
     stream->Write(end_msg);
-    std::cout << "[Server] Sent FileWriteEnd" << std::endl;
+    LOG(INFO) << "[Server] Sent FileWriteEnd";
     
     // Unlock files
     storage_.UnlockFilesAfterRead(client_id, req);
@@ -485,8 +485,8 @@ void SyncServiceImpl::NotifyFileChanges(const std::string& dir_id,
         *check->add_files() = file;
     }
     
-    std::cout << "[Server] Notifying subscribers of " << dir_id 
-              << " about " << files.size() << " file changes" << std::endl;
+    LOG(INFO) << "[Server] Notifying subscribers of " << dir_id 
+              << " about " << files.size() << " file changes";
     subscriptions_.NotifySubscribers(dir_id, except_client, notification);
 }
 
