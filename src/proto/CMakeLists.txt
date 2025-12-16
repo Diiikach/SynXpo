@@ -1,4 +1,6 @@
 # Create a library for generated proto files
+include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
+
 add_library(synxpo_proto
     synxpo.proto
 )

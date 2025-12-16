@@ -4,6 +4,10 @@
 #include <chrono>
 #include <csignal>
 #include <atomic>
+#include <cstdlib>
+#include <unistd.h>
+#include <filesystem>
+#include <pwd.h>
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
@@ -22,69 +26,85 @@ void SignalHandler(int signal) {
     std::cout << "\nReceived signal " << signal << ", shutting down..." << std::endl;
     running.store(false);
 }
+
+std::string ExpandPath(const std::string& path) {
+    if (path.empty() || path[0] != '~') {
+        return path;
+    }
+    
+    const char* home = std::getenv("HOME");
+    if (home == nullptr) {
+        home = getpwuid(getuid())->pw_dir;
+    }
+    
+    if (path.size() == 1) {
+        return std::string(home);
+    }
+    
+    if (path[1] == '/') {
+        return std::string(home) + path.substr(1);
+    }
+    
+    return path;  // Return as-is if not in format ~/...
+}
 }  // namespace
 
-ABSL_FLAG(std::string, config_file, "synxpo_config.json", "Путь к файлу конфигурации");
-ABSL_FLAG(bool, backup, false, "Совершить бэкап (заглушка)");
-ABSL_FLAG(bool, restore, false, "Откатить из бэкапа (заглушка)");
-ABSL_FLAG(std::string, add_watch_directory, "", "Добавить директорию для отслеживания");
-
-ABSL_FLAG(std::string, set_server_address, "", "Изменить server_address в конфиге и сохранить");
-ABSL_FLAG(std::string, set_storage_path, "", "Изменить storage_path в конфиге и сохранить");
-ABSL_FLAG(std::string, set_backup_path, "", "Изменить backup_path в конфиге и сохранить");
-ABSL_FLAG(std::string, set_temp_path, "", "Изменить temp_path в конфиге и сохранить");
-ABSL_FLAG(int64_t, set_watch_debounce_ms, -1, "Изменить watch_debounce_ms в конфиге и сохранить");
-ABSL_FLAG(int64_t, set_chunk_size, -1, "Изменить chunk_size в конфиге и сохранить");
+ABSL_FLAG(std::string, config, "~/.config/synxpo/config.json", "Путь к файлу конфигурации");
+ABSL_FLAG(std::string, path, "", "Путь для команды dir-pull");
+ABSL_FLAG(std::string, name, "", "Имя директории для синхронизации");
 
 int main(int argc, char** argv) {
     absl::SetProgramUsageMessage(
-        "SynXpo — синхронизация директорий и резервное копирование.\n"
-        "Режимы:\n"
-        "  1) По умолчанию: запускает синхронизацию (auto sync).\n"
-        "  2) Управление конфигом: --set_server_address=... и/или другие --set_* (сохранит и выйдет).\n"
-        "  3) Добавить директорию: --add_watch_directory=/path (сохранит и выйдет).\n"
-        "  4) Бэкап/откат: --backup / --restore (заглушки).\n"
+        "SynXpo — синхронизация директорий.\n\n"
+        "Использование:\n"
+        "  program [--config path] <command> [args...]\n\n"
+        "Команды:\n"
+        "  sync                    Запустить синхронизацию (по умолчанию)\n"
+        "  dir-link <path>         Добавить директорию для отслеживания\n"
+        "  dir-pull <id>           Подтянуть директорию с сервера\n"
+        "  config set <key> <value> Изменить параметр конфигурации\n\n"
+        "Опции:\n"
+        "  --config <path>         Путь к файлу конфигурации (по умолчанию: ~/.config/synxpo/config.json)\n"
+        "  --path <path>           Целевой путь для dir-pull\n"
+        "  --name <name>           Имя директории для синхронизации (по умолчанию: используется id)\n\n"
+        "Параметры конфигурации для 'config set':\n"
+        "  server_address <адрес>     Адрес gRPC сервера (например: localhost:50051)\n"
+        "  storage_path <путь>        Путь к локальному хранилищу файлов\n"
+        "  backup_path <путь>         Путь для резервных копий\n"
+        "  temp_path <путь>           Путь для временных файлов\n"
+        "  watch_debounce_ms <мс>     Задержка отслеживания изменений в миллисекундах\n"
+        "  chunk_size <байты>         Размер чанка для передачи файлов в байтах\n\n"
         "Примеры:\n"
-        "  ./synxpo-client --config_file=cfg.json --set_server_address=localhost:50051\n"
-        "  ./synxpo-client --config_file=cfg.json --add_watch_directory=/home/user/Documents"
+        "  ./synxpo-client sync\n"
+        "  ./synxpo-client dir-link /home/user/Documents\n"
+        "  ./synxpo-client dir-pull abc123 --path /home/user/Downloads\n"
+        "  ./synxpo-client dir-pull def456 --name MyProject\n"
+        "  ./synxpo-client config set server_address localhost:50051\n"
+        "  ./synxpo-client config set storage_path /home/user/synxpo_data\n"
+        "  ./synxpo-client config set chunk_size 2097152\n"
+        "  ./synxpo-client --config my_config.json config set watch_debounce_ms 1000"
     );
-    absl::ParseCommandLine(argc, argv);
-
-    std::string config_path = absl::GetFlag(FLAGS_config_file);
-    bool do_backup = absl::GetFlag(FLAGS_backup);
-    bool do_restore = absl::GetFlag(FLAGS_restore);
-    std::string watch_dir = absl::GetFlag(FLAGS_add_watch_directory);
-
-    std::string set_server_address = absl::GetFlag(FLAGS_set_server_address);
-    std::string set_storage_path = absl::GetFlag(FLAGS_set_storage_path);
-    std::string set_backup_path = absl::GetFlag(FLAGS_set_backup_path);
-    std::string set_temp_path = absl::GetFlag(FLAGS_set_temp_path);
-    int64_t set_watch_debounce_ms = absl::GetFlag(FLAGS_set_watch_debounce_ms);
-    int64_t set_chunk_size = absl::GetFlag(FLAGS_set_chunk_size);
-
-    bool has_config_update = !set_server_address.empty() || !set_storage_path.empty() ||
-        !set_backup_path.empty() || !set_temp_path.empty() || set_watch_debounce_ms >= 0 ||
-        set_chunk_size >= 0;
-
-    int command_count = 0;
-    if (has_config_update) {
-        ++command_count;
+    std::vector<char*> args = absl::ParseCommandLine(argc, argv);
+    
+    std::string config_path = ExpandPath(absl::GetFlag(FLAGS_config));
+    std::string target_path = ExpandPath(absl::GetFlag(FLAGS_path));
+    std::string dir_name = absl::GetFlag(FLAGS_name);
+    
+    // Создаем директорию для конфига, если она не существует
+    std::filesystem::create_directories(std::filesystem::path(config_path).parent_path());
+    
+    // Получаем команду из позиционных аргументов
+    std::string command = "sync";  // по умолчанию
+    std::vector<std::string> command_args;
+    
+    if (args.size() > 1) {
+        command = args[1];
+        for (size_t i = 2; i < args.size(); ++i) {
+            command_args.push_back(args[i]);
+        }
     }
-    if (!watch_dir.empty()) {
-        ++command_count;
-    }
-    if (do_backup) {
-        ++command_count;
-    }
-    if (do_restore) {
-        ++command_count;
-    }
-    if (command_count > 1) {
-        std::cerr << "Error: выбери только одну команду: config update / add_watch_directory / backup / restore" << std::endl;
-        return 2;
-    }
-
-    // Управление конфигом и командами-параметрами
+    
+    // Загружаем конфиг
     synxpo::ClientConfig config;
     auto load_status = config.Load(config_path);
     if (!load_status.ok()) {
@@ -96,61 +116,128 @@ int main(int argc, char** argv) {
         config.SetWatchDebounce(std::chrono::milliseconds(500));
         config.SetChunkSize(1024 * 1024);  // 1 MB
     }
-
-    if (has_config_update) {
-        if (!set_server_address.empty()) {
-            config.SetServerAddress(set_server_address);
-        }
-        if (!set_storage_path.empty()) {
-            config.SetStoragePath(set_storage_path);
-        }
-        if (!set_backup_path.empty()) {
-            config.SetBackupPath(set_backup_path);
-        }
-        if (!set_temp_path.empty()) {
-            config.SetTempPath(set_temp_path);
-        }
-        if (set_watch_debounce_ms >= 0) {
-            config.SetWatchDebounce(std::chrono::milliseconds(set_watch_debounce_ms));
-        }
-        if (set_chunk_size >= 0) {
-            config.SetChunkSize(static_cast<size_t>(set_chunk_size));
-        }
-
-        auto save_status = config.Save(config_path);
-        if (!save_status.ok()) {
-            std::cerr << "Failed to save config: " << save_status.message() << std::endl;
+    
+    // Обрабатываем команды
+    if (command == "dir-link") {
+        if (command_args.empty()) {
+            std::cerr << "Error: dir-link requires path argument\n";
+            std::cerr << "Usage: dir-link <path>\n";
             return 1;
         }
-        std::cout << "Config updated and saved: " << config_path << std::endl;
-        return 0;
-    }
-
-    if (!watch_dir.empty()) {
+        
+        std::string path = command_args[0];
         synxpo::DirectoryConfig dir;
-        dir.directory_id.clear();
-        dir.local_path = watch_dir;
+        dir.directory_id.clear();  // Будет назначен сервером
+        dir.local_path = path;
         config.AddDirectory(dir);
+        
         auto save_status = config.Save(config_path);
         if (!save_status.ok()) {
             std::cerr << "Failed to save config: " << save_status.message() << std::endl;
             return 1;
         }
-        std::cout << "Добавлена директория для отслеживания: " << watch_dir << std::endl;
+        std::cout << "Добавлена директория для отслеживания: " << path << std::endl;
         return 0;
+        
+    } else if (command == "dir-pull") {
+        if (command_args.empty()) {
+            std::cerr << "Error: dir-pull requires id argument\n";
+            std::cerr << "Usage: dir-pull <id> [--path <path>] [--name <name>]\n";
+            return 1;
+        }
+        
+        std::string id = command_args[0];
+        
+        std::string final_dir_name = dir_name.empty() ? id : dir_name;
+        
+        std::string final_path;
+        if (!target_path.empty()) {
+            final_path = target_path;
+        } else {
+            const char* home = std::getenv("HOME");
+            if (home == nullptr) {
+                home = getpwuid(getuid())->pw_dir;
+            }
+            final_path = std::string(home) + "/" + final_dir_name;
+        }
+        
+        std::cout << "Подтягивание директории с сервера...\n";
+        std::cout << "ID: " << id << "\n";
+        std::cout << "Имя: " << final_dir_name << "\n";
+        std::cout << "Целевой путь: " << final_path << "\n";
+        
+        // Создаем директорию, если она не существует
+        try {
+            std::filesystem::create_directories(final_path);
+            std::cout << "✓ Директория создана: " << final_path << "\n";
+        } catch (const std::filesystem::filesystem_error& e) {
+            std::cerr << "Error creating directory: " << e.what() << std::endl;
+            return 1;
+        }
+        
+        // Добавляем директорию в конфиг для синхронизации
+        synxpo::DirectoryConfig dir;
+        dir.directory_id = id;
+        dir.local_path = final_path;
+        config.AddDirectory(dir);
+        
+        auto save_status = config.Save(config_path);
+        if (!save_status.ok()) {
+            std::cerr << "Failed to save config: " << save_status.message() << std::endl;
+            return 1;
+        }
+        
+        std::cout << "✓ Директория добавлена в конфигурацию для синхронизации\n";
+        std::cout << "Теперь вы можете запустить 'sync' для синхронизации\n";
+        return 0;
+        
+    } else if (command == "config" && command_args.size() >= 3 && command_args[0] == "set") {
+        std::string key = command_args[1];
+        std::string value = command_args[2];
+        
+        if (key == "server_address") {
+            config.SetServerAddress(value);
+        } else if (key == "storage_path") {
+            config.SetStoragePath(value);
+        } else if (key == "backup_path") {
+            config.SetBackupPath(value);
+        } else if (key == "temp_path") {
+            config.SetTempPath(value);
+        } else if (key == "watch_debounce_ms") {
+            try {
+                int64_t ms = std::stoll(value);
+                config.SetWatchDebounce(std::chrono::milliseconds(ms));
+            } catch (const std::exception& e) {
+                std::cerr << "Error: invalid value for watch_debounce_ms: " << value << std::endl;
+                return 1;
+            }
+        } else if (key == "chunk_size") {
+            try {
+                int64_t size = std::stoll(value);
+                config.SetChunkSize(static_cast<size_t>(size));
+            } catch (const std::exception& e) {
+                std::cerr << "Error: invalid value for chunk_size: " << value << std::endl;
+                return 1;
+            }
+        } else {
+            std::cerr << "Error: unknown config key: " << key << std::endl;
+            return 1;
+        }
+        
+        auto save_status = config.Save(config_path);
+        if (!save_status.ok()) {
+            std::cerr << "Failed to save config: " << save_status.message() << std::endl;
+            return 1;
+        }
+        std::cout << "Config updated: " << key << " = " << value << std::endl;
+        return 0;
+        
+    } else if (command != "sync") {
+        std::cerr << "Error: unknown command: " << command << std::endl;
+        return 1;
     }
 
-    if (do_backup) {
-        // TODO: сделать реальный backup, пока просто заглушка
-        std::cout << "Выполняется бэкап (заглушка) ..." << std::endl;
-        return 0;
-    }
-
-    if (do_restore) {
-        // TODO: сделать реальный restore/rollback, пока просто заглушка
-        std::cout << "Выполняется откат из бэкапа (заглушка) ..." << std::endl;
-        return 0;
-    }
+    // Если дошли сюда, значит команда sync или по умолчанию
 
     // Setup signal handlers
     std::signal(SIGINT, SignalHandler);
