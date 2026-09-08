@@ -1,6 +1,6 @@
-#include "synxpo/server/upload_session.h"
+#include "synxpo/domain/upload_session.h"
 
-namespace synxpo::server {
+namespace synxpo::domain {
 
 const char* ToString(UploadSessionState state) {
     switch (state) {
@@ -88,4 +88,4 @@ bool IsTransitionAllowed(UploadSessionState from, UploadSessionState to) {
     return false;
 }
 
-}  // namespace synxpo::server
+}  // namespace synxpo::domain

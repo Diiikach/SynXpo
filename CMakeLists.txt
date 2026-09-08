@@ -11,9 +11,17 @@ option(SYNXPO_BUILD_TESTS "Build SynXpo tests" ON)
 
 find_package(SQLite3 REQUIRED)
 
-add_subdirectory(src/server)
+file(GLOB SYNXPO_SQLITE_MIGRATIONS CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/migrations/sqlite/*.sql"
+)
+file(COPY "${CMAKE_SOURCE_DIR}/migrations/sqlite/"
+    DESTINATION "${CMAKE_BINARY_DIR}/migrations/sqlite"
+)
 
 if(SYNXPO_BUILD_TESTS)
     enable_testing()
-    add_subdirectory(tests)
 endif()
+
+add_subdirectory(libs/domain)
+add_subdirectory(libs/db)
+add_subdirectory(libs/db_sqlite)

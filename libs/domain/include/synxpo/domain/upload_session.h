@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace synxpo::server {
+namespace synxpo::domain {
 
 enum class UploadSessionState {
     kCreated,
@@ -77,4 +77,4 @@ std::optional<UploadFileState> ParseUploadFileState(const std::string& value);
 bool IsTerminal(UploadSessionState state);
 bool IsTransitionAllowed(UploadSessionState from, UploadSessionState to);
 
-}  // namespace synxpo::server
+}  // namespace synxpo::domain

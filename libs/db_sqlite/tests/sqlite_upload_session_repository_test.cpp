@@ -1,23 +1,26 @@
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include "synxpo/server/sqlite_session_repository.h"
+#include <sqlite3.h>
+
+#include "synxpo/db_sqlite/sqlite_upload_session_repository.h"
 
 namespace {
 
-using synxpo::server::Directory;
-using synxpo::server::RepositoryError;
-using synxpo::server::SqliteSessionRepository;
-using synxpo::server::UploadFileOperation;
-using synxpo::server::UploadFileState;
-using synxpo::server::UploadSession;
-using synxpo::server::UploadSessionFile;
-using synxpo::server::UploadSessionState;
+using synxpo::db::RepositoryError;
+using synxpo::db_sqlite::SqliteUploadSessionRepository;
+using synxpo::domain::Directory;
+using synxpo::domain::UploadFileOperation;
+using synxpo::domain::UploadFileState;
+using synxpo::domain::UploadSession;
+using synxpo::domain::UploadSessionFile;
+using synxpo::domain::UploadSessionState;
 
 void Require(bool value, const std::string& message) {
     if (!value) throw std::runtime_error(message);
@@ -47,9 +50,23 @@ UploadSession NewSession(const std::string& id, std::int64_t now_ms = 1'000) {
     return session;
 }
 
-void AddDirectory(SqliteSessionRepository& repository) {
+void AddDirectory(SqliteUploadSessionRepository& repository) {
     const auto status = repository.CreateDirectory(Directory{"directory-1", 3, 100});
     Require(status.ok(), "directory must be created: " + status.message);
+}
+
+int ReadAppliedMigrationVersion(const std::filesystem::path& database_path) {
+    sqlite3* database = nullptr;
+    Require(sqlite3_open_v2(database_path.string().c_str(), &database, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK,
+            "database must be readable");
+    sqlite3_stmt* statement = nullptr;
+    Require(sqlite3_prepare_v2(database, "SELECT MAX(version) FROM schema_migrations;", -1, &statement, nullptr) == SQLITE_OK,
+            "schema_migrations must exist");
+    Require(sqlite3_step(statement) == SQLITE_ROW, "schema migration version must be readable");
+    const int version = sqlite3_column_int(statement, 0);
+    sqlite3_finalize(statement);
+    sqlite3_close(database);
+    return version;
 }
 
 void TestSchemaAndPersistence() {
@@ -57,8 +74,9 @@ void TestSchemaAndPersistence() {
     const auto database_path = temporary_directory.path / "server.db";
 
     {
-        SqliteSessionRepository repository(database_path);
+        SqliteUploadSessionRepository repository(database_path);
         Require(repository.Initialize().ok(), "migrations must succeed");
+        Require(ReadAppliedMigrationVersion(database_path) == 1, "initial migration must be recorded");
         AddDirectory(repository);
 
         auto session = NewSession("session-1");
@@ -91,14 +109,33 @@ void TestSchemaAndPersistence() {
         Require(files[0].path == "new.txt" && files[1].path == "old.txt", "files must be sorted by path");
     }
 
-    SqliteSessionRepository reopened_repository(database_path);
+    SqliteUploadSessionRepository reopened_repository(database_path);
     Require(reopened_repository.Initialize().ok(), "migrations must be idempotent");
     Require(reopened_repository.GetSession("session-1").has_value(), "session must survive a restart");
 }
 
+void TestAdditionalMigrationIsAppliedOnce() {
+    TemporaryDirectory temporary_directory;
+    const auto migrations_directory = temporary_directory.path / "migrations";
+    std::filesystem::copy(
+        SqliteUploadSessionRepository::DefaultMigrationsDirectory(), migrations_directory,
+        std::filesystem::copy_options::recursive);
+    {
+        std::ofstream migration(migrations_directory / "0002_test_table.sql");
+        migration << "CREATE TABLE migration_test_table (id INTEGER PRIMARY KEY);\n";
+    }
+
+    const auto database_path = temporary_directory.path / "server.db";
+    SqliteUploadSessionRepository repository(database_path, migrations_directory);
+    Require(repository.Initialize().ok(), "additional migration must succeed");
+    Require(ReadAppliedMigrationVersion(database_path) == 2, "additional migration must be recorded");
+    Require(repository.Initialize().ok(), "reapplying migrations must be idempotent");
+    Require(ReadAppliedMigrationVersion(database_path) == 2, "migration version must not be duplicated");
+}
+
 void TestStateTransitionCompareAndSet() {
     TemporaryDirectory temporary_directory;
-    SqliteSessionRepository repository(temporary_directory.path / "server.db");
+    SqliteUploadSessionRepository repository(temporary_directory.path / "server.db");
     Require(repository.Initialize().ok(), "migrations must succeed");
     AddDirectory(repository);
     Require(repository.CreateSession(NewSession("session-1"), {}).ok(), "session must be created");
@@ -116,7 +153,7 @@ void TestStateTransitionCompareAndSet() {
 
 void TestCreateSessionValidationAndExpiry() {
     TemporaryDirectory temporary_directory;
-    SqliteSessionRepository repository(temporary_directory.path / "server.db");
+    SqliteUploadSessionRepository repository(temporary_directory.path / "server.db");
     Require(repository.Initialize().ok(), "migrations must succeed");
     AddDirectory(repository);
 
@@ -140,6 +177,7 @@ void TestCreateSessionValidationAndExpiry() {
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"schema_and_persistence", TestSchemaAndPersistence},
+        {"additional_migration_is_applied_once", TestAdditionalMigrationIsAppliedOnce},
         {"state_transition_compare_and_set", TestStateTransitionCompareAndSet},
         {"create_session_validation_and_expiry", TestCreateSessionValidationAndExpiry},
     };

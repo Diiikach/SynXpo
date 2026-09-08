@@ -1,13 +1,30 @@
-#include "synxpo/server/sqlite_session_repository.h"
+#include "synxpo/db_sqlite/sqlite_upload_session_repository.h"
 
+#include <algorithm>
+#include <charconv>
+#include <fstream>
 #include <limits>
 #include <set>
 #include <system_error>
 
 #include <sqlite3.h>
 
-namespace synxpo::server {
+namespace synxpo::db_sqlite {
 namespace {
+
+using db::RepositoryError;
+using db::RepositoryStatus;
+using domain::Directory;
+using domain::IsTransitionAllowed;
+using domain::ParseUploadFileOperation;
+using domain::ParseUploadFileState;
+using domain::ParseUploadSessionState;
+using domain::ToString;
+using domain::UploadFileOperation;
+using domain::UploadFileState;
+using domain::UploadSession;
+using domain::UploadSessionFile;
+using domain::UploadSessionState;
 
 constexpr auto kSqliteOk = SQLITE_OK;
 
@@ -124,20 +141,31 @@ std::optional<UploadSessionFile> ReadSessionFile(sqlite3_stmt* statement) {
 
 }  // namespace
 
-SqliteSessionRepository::SqliteSessionRepository(const std::filesystem::path& database_path)
-    : database_path_(database_path) {}
+using db::RepositoryError;
+using db::RepositoryStatus;
+using namespace domain;
 
-SqliteSessionRepository::~SqliteSessionRepository() {
+SqliteUploadSessionRepository::SqliteUploadSessionRepository(
+    std::filesystem::path database_path,
+    std::filesystem::path migrations_directory)
+    : database_path_(std::move(database_path)),
+      migrations_directory_(std::move(migrations_directory)) {}
+
+SqliteUploadSessionRepository::~SqliteUploadSessionRepository() {
     if (db_ != nullptr) sqlite3_close(db_);
 }
 
-RepositoryStatus SqliteSessionRepository::Initialize() {
+std::filesystem::path SqliteUploadSessionRepository::DefaultMigrationsDirectory() {
+    return SYNXPO_SQLITE_MIGRATIONS_DIRECTORY;
+}
+
+RepositoryStatus SqliteUploadSessionRepository::Initialize() {
     auto status = Open();
     if (!status.ok()) return status;
     return ApplyMigrations();
 }
 
-RepositoryStatus SqliteSessionRepository::Open() {
+RepositoryStatus SqliteUploadSessionRepository::Open() {
     if (db_ != nullptr) return RepositoryStatus::Ok();
     std::error_code error;
     const auto parent = database_path_.parent_path();
@@ -156,9 +184,9 @@ RepositoryStatus SqliteSessionRepository::Open() {
     return Execute("PRAGMA foreign_keys = ON;");
 }
 
-RepositoryStatus SqliteSessionRepository::Execute(const char* sql) const {
+RepositoryStatus SqliteUploadSessionRepository::Execute(const std::string& sql) const {
     char* error_message = nullptr;
-    if (sqlite3_exec(db_, sql, nullptr, nullptr, &error_message) != kSqliteOk) {
+    if (sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &error_message) != kSqliteOk) {
         std::string message = error_message == nullptr ? sqlite3_errmsg(db_) : error_message;
         sqlite3_free(error_message);
         return {RepositoryError::kStorage, message};
@@ -166,77 +194,76 @@ RepositoryStatus SqliteSessionRepository::Execute(const char* sql) const {
     return RepositoryStatus::Ok();
 }
 
-RepositoryStatus SqliteSessionRepository::ApplyMigrations() {
-    auto status = Execute("BEGIN IMMEDIATE;");
+RepositoryStatus SqliteUploadSessionRepository::ApplyMigrations() {
+    auto status = Execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations ("
+        "version INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL);");
     if (!status.ok()) return status;
-    const auto rollback = [this]() { Execute("ROLLBACK;"); };
 
-    status = Execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);");
-    if (!status.ok()) { rollback(); return status; }
-
-    Statement version_query(db_, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations;");
-    if (!version_query.valid()) { rollback(); return version_query.error(); }
-    if (sqlite3_step(version_query.get()) != SQLITE_ROW) {
-        status = StorageError(db_, "read schema version"); rollback(); return status;
+    std::error_code error;
+    if (!std::filesystem::is_directory(migrations_directory_, error) || error) {
+        return {RepositoryError::kStorage, "migration directory is unavailable: " + migrations_directory_.string()};
     }
-    const auto version = sqlite3_column_int(version_query.get(), 0);
-    if (version > 1) {
-        rollback();
+
+    struct Migration { int version; std::filesystem::path path; };
+    std::vector<Migration> migrations;
+    for (const auto& entry : std::filesystem::directory_iterator(migrations_directory_, error)) {
+        if (error) return {RepositoryError::kStorage, "read migration directory: " + error.message()};
+        const auto filename = entry.path().filename().string();
+        const auto separator = filename.find('_');
+        if (!entry.is_regular_file() || entry.path().extension() != ".sql" || separator == std::string::npos) continue;
+        int version = 0;
+        const auto [end, parse_error] = std::from_chars(filename.data(), filename.data() + separator, version);
+        if (parse_error != std::errc{} || end != filename.data() + separator || version <= 0) {
+            return {RepositoryError::kStorage, "invalid migration filename: " + filename};
+        }
+        migrations.push_back({version, entry.path()});
+    }
+    std::sort(migrations.begin(), migrations.end(), [](const auto& left, const auto& right) {
+        return left.version < right.version;
+    });
+    for (std::size_t index = 1; index < migrations.size(); ++index) {
+        if (migrations[index - 1].version == migrations[index].version) {
+            return {RepositoryError::kStorage, "duplicate migration version"};
+        }
+    }
+
+    Statement applied_query(db_, "SELECT version FROM schema_migrations ORDER BY version;");
+    if (!applied_query.valid()) return applied_query.error();
+    std::set<int> applied;
+    while (sqlite3_step(applied_query.get()) == SQLITE_ROW) applied.insert(sqlite3_column_int(applied_query.get(), 0));
+    if (sqlite3_errcode(db_) != SQLITE_OK && sqlite3_errcode(db_) != SQLITE_DONE) {
+        return StorageError(db_, "read applied migrations");
+    }
+    const auto latest_known = migrations.empty() ? 0 : migrations.back().version;
+    if (!applied.empty() && *applied.rbegin() > latest_known) {
         return {RepositoryError::kStorage, "database schema is newer than this binary"};
     }
-    if (version == 0) {
-        status = Execute(R"sql(
-            CREATE TABLE directories (
-                id TEXT PRIMARY KEY NOT NULL,
-                current_revision INTEGER NOT NULL DEFAULT 0 CHECK (current_revision >= 0),
-                created_at_ms INTEGER NOT NULL
-            );
-            CREATE TABLE upload_sessions (
-                id TEXT PRIMARY KEY NOT NULL,
-                directory_id TEXT NOT NULL REFERENCES directories(id),
-                owner_id TEXT NOT NULL,
-                base_revision INTEGER NOT NULL CHECK (base_revision >= 0),
-                state TEXT NOT NULL CHECK (state IN ('created','uploading','validating','committing','committed','aborted','expired')),
-                manifest_hash TEXT,
-                idempotency_key TEXT,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                expires_at_ms INTEGER NOT NULL,
-                committed_revision INTEGER CHECK (committed_revision IS NULL OR committed_revision >= 0),
-                error_code TEXT,
-                error_message TEXT,
-                UNIQUE(directory_id, owner_id, idempotency_key)
-            );
-            CREATE INDEX upload_sessions_by_directory_state
-                ON upload_sessions(directory_id, state);
-            CREATE INDEX upload_sessions_by_expiry
-                ON upload_sessions(expires_at_ms);
-            CREATE TABLE upload_session_files (
-                session_id TEXT NOT NULL REFERENCES upload_sessions(id) ON DELETE CASCADE,
-                file_id TEXT,
-                path TEXT NOT NULL,
-                operation TEXT NOT NULL CHECK (operation IN ('create','update','delete','rename')),
-                expected_version INTEGER CHECK (expected_version IS NULL OR expected_version >= 0),
-                content_hash TEXT,
-                size INTEGER CHECK (size IS NULL OR size >= 0),
-                staging_path TEXT,
-                received_bytes INTEGER NOT NULL DEFAULT 0 CHECK (received_bytes >= 0),
-                state TEXT NOT NULL CHECK (state IN ('pending','uploading','complete','failed')),
-                PRIMARY KEY(session_id, path)
-            );
-            CREATE INDEX upload_session_files_by_session_state
-                ON upload_session_files(session_id, state);
-        )sql");
-        if (!status.ok()) { rollback(); return status; }
-        status = Execute("INSERT INTO schema_migrations(version) VALUES (1);");
+
+    for (const auto& migration : migrations) {
+        if (applied.contains(migration.version)) continue;
+        std::ifstream input(migration.path);
+        const std::string sql((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        if (!input.good() && !input.eof()) return {RepositoryError::kStorage, "read migration: " + migration.path.string()};
+        if (sql.empty()) return {RepositoryError::kStorage, "migration is empty: " + migration.path.string()};
+        status = Execute("BEGIN IMMEDIATE;");
+        if (!status.ok()) return status;
+        const auto rollback = [this]() { Execute("ROLLBACK;"); };
+        status = Execute(sql);
+        if (!status.ok()) { rollback(); return {status.code, migration.path.filename().string() + ": " + status.message}; }
+        Statement record(db_, "INSERT INTO schema_migrations(version, name) VALUES (?, ?);");
+        if (!record.valid() || sqlite3_bind_int(record.get(), 1, migration.version) != kSqliteOk ||
+            !BindText(record.get(), 2, migration.path.filename().string()) || sqlite3_step(record.get()) != SQLITE_DONE) {
+            rollback();
+            return record.valid() ? StorageError(db_, "record migration") : record.error();
+        }
+        status = Execute("COMMIT;");
         if (!status.ok()) { rollback(); return status; }
     }
-    status = Execute("COMMIT;");
-    if (!status.ok()) { rollback(); return status; }
     return RepositoryStatus::Ok();
 }
 
-RepositoryStatus SqliteSessionRepository::CreateDirectory(const Directory& directory) {
+RepositoryStatus SqliteUploadSessionRepository::CreateDirectory(const Directory& directory) {
     if (directory.id.empty()) return {RepositoryError::kInvalidArgument, "directory id is required"};
     Statement statement(db_, "INSERT INTO directories(id, current_revision, created_at_ms) VALUES (?, ?, ?);");
     if (!statement.valid()) return statement.error();
@@ -248,7 +275,7 @@ RepositoryStatus SqliteSessionRepository::CreateDirectory(const Directory& direc
     return RepositoryStatus::Ok();
 }
 
-std::optional<Directory> SqliteSessionRepository::GetDirectory(const std::string& directory_id) const {
+std::optional<Directory> SqliteUploadSessionRepository::GetDirectory(const std::string& directory_id) const {
     Statement statement(db_, "SELECT id, current_revision, created_at_ms FROM directories WHERE id = ?;");
     if (!statement.valid() || !BindText(statement.get(), 1, directory_id) || sqlite3_step(statement.get()) != SQLITE_ROW) return std::nullopt;
     const auto revision = sqlite3_column_int64(statement.get(), 1);
@@ -256,7 +283,7 @@ std::optional<Directory> SqliteSessionRepository::GetDirectory(const std::string
     return Directory{ColumnText(statement.get(), 0), static_cast<std::uint64_t>(revision), sqlite3_column_int64(statement.get(), 2)};
 }
 
-RepositoryStatus SqliteSessionRepository::CreateSession(
+RepositoryStatus SqliteUploadSessionRepository::CreateSession(
     const UploadSession& session, const std::vector<UploadSessionFile>& files) {
     if (session.id.empty() || session.directory_id.empty() || session.owner_id.empty()) {
         return {RepositoryError::kInvalidArgument, "session id, directory id and owner id are required"};
@@ -330,7 +357,7 @@ RepositoryStatus SqliteSessionRepository::CreateSession(
     return RepositoryStatus::Ok();
 }
 
-std::optional<UploadSession> SqliteSessionRepository::GetSession(const std::string& session_id) const {
+std::optional<UploadSession> SqliteUploadSessionRepository::GetSession(const std::string& session_id) const {
     Statement statement(db_, R"sql(
         SELECT id, directory_id, owner_id, base_revision, state, manifest_hash, idempotency_key,
                created_at_ms, updated_at_ms, expires_at_ms, committed_revision, error_code, error_message
@@ -340,7 +367,7 @@ std::optional<UploadSession> SqliteSessionRepository::GetSession(const std::stri
     return ReadSession(statement.get());
 }
 
-std::vector<UploadSessionFile> SqliteSessionRepository::ListSessionFiles(const std::string& session_id) const {
+std::vector<UploadSessionFile> SqliteUploadSessionRepository::ListSessionFiles(const std::string& session_id) const {
     std::vector<UploadSessionFile> files;
     Statement statement(db_, R"sql(
         SELECT session_id, file_id, path, operation, expected_version, content_hash, size,
@@ -354,7 +381,7 @@ std::vector<UploadSessionFile> SqliteSessionRepository::ListSessionFiles(const s
     return files;
 }
 
-RepositoryStatus SqliteSessionRepository::TransitionSession(
+RepositoryStatus SqliteUploadSessionRepository::TransitionSession(
     const std::string& session_id, UploadSessionState expected_state,
     UploadSessionState next_state, std::int64_t updated_at_ms) {
     if (!IsTransitionAllowed(expected_state, next_state)) {
@@ -376,7 +403,7 @@ RepositoryStatus SqliteSessionRepository::TransitionSession(
         : RepositoryStatus{RepositoryError::kNotFound, "session does not exist"};
 }
 
-std::uint64_t SqliteSessionRepository::ExpireSessions(std::int64_t now_ms) {
+std::uint64_t SqliteUploadSessionRepository::ExpireSessions(std::int64_t now_ms) {
     Statement statement(db_, R"sql(
         UPDATE upload_sessions SET state = 'expired', updated_at_ms = ?
         WHERE expires_at_ms <= ? AND state NOT IN ('committed', 'aborted', 'expired');
@@ -388,4 +415,4 @@ std::uint64_t SqliteSessionRepository::ExpireSessions(std::int64_t now_ms) {
     return static_cast<std::uint64_t>(sqlite3_changes(db_));
 }
 
-}  // namespace synxpo::server
+}  // namespace synxpo::db_sqlite
