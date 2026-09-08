@@ -1,6 +1,7 @@
 .vscode
 
 build/
+build-server/
 synxpo_storage/
 bin/
 *.log

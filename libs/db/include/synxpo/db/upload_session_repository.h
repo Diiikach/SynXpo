@@ -25,7 +25,7 @@ struct RepositoryStatus {
     static RepositoryStatus Ok() { return {}; }
 };
 
-// Contract used by application code. It intentionally contains no SQLite types.
+// Contract used by application code. It intentionally contains no storage types.
 class UploadSessionRepository {
 public:
     virtual ~UploadSessionRepository() = default;

@@ -74,3 +74,14 @@ upload_session_files
 `idempotency_key` возвращает эту же версию и не создаёт новую. Это необходимо,
 когда сервер успешно закоммитил изменения, но клиент не получил ответ из-за
 разрыва сети.
+
+## Инфраструктурный план
+
+HTTP control plane и gRPC data plane будут реализованы на `userver` в
+`apps/server/` и отдельных transport-адаптерах. Framework отвечает за запуск
+сервиса, конфигурацию, observability и выполнение запросов, но не входит в
+domain/application API.
+
+Единственным persistence storage является PostgreSQL. `db_postgres` на userver
+uPg реализует `db::UploadSessionRepository`; миграции живут в
+`migrations/postgres/` как отдельные immutable SQL-файлы.
