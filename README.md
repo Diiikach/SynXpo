@@ -1,18 +1,37 @@
 # SynXpo
 
-## Установка
+Проект находится в стадии переосмысления серверной архитектуры.
 
-### Сборка из исходного кода
-Склонируйте этот репозиторий и запустите следующие команды:
+Старая реализация клиента, сервера и протокола синхронизации удалена. Новая
+версия будет строиться вокруг долговечных upload-сессий, staging-хранилища и
+атомарной публикации ревизий. Текущее архитектурное решение описано в
+[`adr-server.md`](adr-server.md).
+
+Описание состава сервиса, границ слоёв и целевого data flow находится в
+[`docs/architecture.md`](docs/architecture.md).
+
+Доменные типы расположены в `libs/domain`, контракт persistence — в `libs/db`.
+Production persistence будет реализован PostgreSQL-адаптером на userver uPg;
+миграции живут в `migrations/postgres/` и фиксируются в `schema_migrations`.
+
+## Сборка
+
+Быстрые domain-тесты не требуют PostgreSQL:
+
 ```bash
-cmake -B build
-cmake --build build
-cmake --install build --prefix /path/to/installation # Путь к директории для установки
+cmake -S . -B build -DSYNXPO_BUILD_TESTS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
-После этого вы сможете запускать клиент и сервер командами `synxpo-client` и `synxpo-server` соответственно. Вы также можете собрать только клиент или только сервер:
+
+Для server-конфигурации CMake скачает userver v3.1 через FetchContent:
+
 ```bash
-cmake -B build
-cmake --build build --target synxpo-client # или synxpo-server
-cmake --install build --prefix /path/to/installation --component client # или server
+cmake -S . -B build-server -DSYNXPO_BUILD_SERVER=ON
+cmake --build build-server --target synxpo-server --parallel
 ```
-Если в вашей системе не установлены gRPC и Protocol Buffers, они будут загружены и собраны автоматически. Обратите внимание, что это довольно долгий процесс (в первый раз сборка может занимать 10-20 минут).
+
+Перед запуском создайте `config_vars.yaml` по примеру
+`apps/server/config/config_vars.example.yaml`, укажите DSN PostgreSQL и
+примените миграции из `migrations/postgres/`. Автоматический migration runner
+будет добавлен вместе с `db_postgres`.
